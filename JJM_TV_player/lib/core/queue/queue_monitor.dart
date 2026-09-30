@@ -28,8 +28,12 @@ class QueueMonitor {
     return DateTime.now().difference(_lastUpdate).inSeconds;
   }
 
-  void notifyQueueUpdated() {
-    _lastUpdate = DateTime.now();
+  void notifyQueueUpdated({int? mutationTime}) {
+    if (mutationTime != null) {
+      _lastUpdate = DateTime.fromMillisecondsSinceEpoch(mutationTime);
+    } else {
+      _lastUpdate = DateTime.now();
+    }
     _setConnected(true);
   }
 

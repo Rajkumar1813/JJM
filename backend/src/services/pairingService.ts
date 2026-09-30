@@ -5,10 +5,7 @@ import { deviceRepo } from '../db/repositories/deviceRepository';
 import { PairingSession, Screen } from '../types';
 
 export class PairingService {
-  /**
-   * Generates a 6-digit numeric pairing code with 15 minutes validity
-   */
-  public createPairingSession(socketId?: string, deviceMetadata?: Record<string, any>): PairingSession {
+  public async createPairingSession(socketId?: string, deviceMetadata?: Record<string, any>): Promise<PairingSession> {
     const pairingCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 15 * 60 * 1000;
 
@@ -21,14 +18,11 @@ export class PairingService {
       createdAt: new Date().toISOString(),
     };
 
-    pairingRepo.save(session);
+    await pairingRepo.save(session);
     return session;
   }
 
-  /**
-   * Admin claims pairing code and binds physical TV hardware (deviceId) to logical screen slot (screenId)
-   */
-  public pairScreen(
+  public async pairScreen(
     pairingCode: string,
     data: {
       name: string;
@@ -38,8 +32,8 @@ export class PairingService {
       queueUrl: string;
       staleThresholdSeconds?: number;
     }
-  ): { screen: Screen; session: PairingSession } {
-    const session = pairingRepo.get(pairingCode);
+  ): Promise<{ screen: Screen; session: PairingSession }> {
+    const session = await pairingRepo.get(pairingCode);
     if (!session) {
       throw new Error('Invalid or expired pairing code');
     }
@@ -48,16 +42,14 @@ export class PairingService {
       throw new Error('Pairing code has expired or is already used');
     }
 
-    // Generate a clean numeric code (e.g. "342") and a prefixed ID (e.g. "SCR-342")
     const rawCode = data.code?.replace(/^SCR-/i, '') || Math.floor(100 + Math.random() * 900).toString();
     const screenCode = rawCode;
     const screenId = data.code?.startsWith('SCR-') ? data.code : `SCR-${rawCode}`;
     const deviceToken = `DEV-${uuidv4()}`;
     const deviceId = `HW-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    // 1. Register physical hardware device in devices table
     const meta = session.deviceMetadata || {};
-    deviceRepo.upsert({
+    await deviceRepo.upsert({
       id: deviceId,
       deviceToken,
       platform: meta.platform || 'Android TV',
@@ -66,10 +58,9 @@ export class PairingService {
       ipAddress: meta.ipAddress,
     });
 
-    // 2. Link device to logical screen slot without duplicating screens
-    let screen = screenRepo.getById(screenId);
+    let screen = await screenRepo.getById(screenId);
     if (screen) {
-      screen = screenRepo.update(screenId, {
+      screen = (await screenRepo.update(screenId, {
         name: data.name,
         departmentId: data.departmentId,
         deviceId,
@@ -82,12 +73,12 @@ export class PairingService {
         lastHeartbeat: new Date().toISOString(),
         lastHeartbeatAt: new Date().toISOString(),
         status: 'active',
-      })!;
+      }))!;
     } else {
-      screen = screenRepo.create({
+      screen = await screenRepo.create({
         id: screenId,
         name: data.name,
-        code: screenId, // store full ID as code for display
+        code: screenId,
         departmentId: data.departmentId,
         deviceId,
         location: data.location,
@@ -110,21 +101,20 @@ export class PairingService {
       });
     }
 
-    // 3. Mark session paired
     session.status = 'paired';
     session.screenId = screen.id;
     session.deviceToken = deviceToken;
-    pairingRepo.save(session);
+    await pairingRepo.save(session);
 
-    auditRepo.log('PAIR_DEVICE', 'Screen', screen.id, `Device ${deviceId} paired with code ${pairingCode} as ${screen.name}`);
+    await auditRepo.log('PAIR_DEVICE', 'Screen', screen.id, `Device ${deviceId} paired with code ${pairingCode} as ${screen.name}`);
     return { screen, session };
   }
 
-  public unpairScreen(screenId: string): Screen | null {
-    const screen = screenRepo.getById(screenId);
+  public async unpairScreen(screenId: string): Promise<Screen | null> {
+    const screen = await screenRepo.getById(screenId);
     if (!screen) return null;
 
-    const updated = screenRepo.update(screenId, {
+    const updated = await screenRepo.update(screenId, {
       deviceToken: null,
       deviceId: null,
       connectionStatus: 'offline',
@@ -132,7 +122,7 @@ export class PairingService {
       status: 'inactive',
     });
 
-    auditRepo.log('UNPAIR_DEVICE', 'Screen', screenId, `Device unpaired from screen ${screen.name}`);
+    await auditRepo.log('UNPAIR_DEVICE', 'Screen', screenId, `Device unpaired from screen ${screen.name}`);
     return updated;
   }
 }

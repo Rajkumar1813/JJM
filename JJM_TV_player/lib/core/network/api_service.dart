@@ -4,6 +4,13 @@ import '../config/app_config.dart';
 import '../storage/storage_service.dart';
 import '../../models/display_models.dart';
 
+class AuthException implements Exception {
+  final String message;
+  AuthException(this.message);
+  @override
+  String toString() => message;
+}
+
 class ReconciliationResult {
   final ResolvedConfig? config;
   final int configVersion;
@@ -34,7 +41,6 @@ class ApiService {
       }
     }
 
-    // Auto-discover candidate behind the scenes
     final candidates = [
       AppConfig.defaultBackendUrl,
       ...AppConfig.candidateUrls,
@@ -60,7 +66,23 @@ class ApiService {
     }
   }
 
-  // Request new pairing session from backend with auto discovery
+  static Future<Map<String, String>> _getHeaders() async {
+    final creds = await StorageService.getCredentials();
+    final headers = {
+      'Content-Type': 'application/json',
+    };
+    if (creds != null && creds['deviceToken'] != null) {
+      headers['X-Device-Token'] = creds['deviceToken']!;
+    }
+    return headers;
+  }
+
+  static void _checkAuth(http.Response res) {
+    if (res.statusCode == 401 || res.statusCode == 403) {
+      throw AuthException('Device token invalid or expired');
+    }
+  }
+
   static Future<Map<String, dynamic>?> requestPairingSession({
     String? socketId,
     Map<String, dynamic>? metadata,
@@ -97,12 +119,12 @@ class ApiService {
     return null;
   }
 
-  // Fetch resolved display configuration for registered screen
   static Future<ResolvedConfig?> fetchDisplayConfig(String screenId) async {
     try {
       final baseUrl = await getBaseUrl();
       final url = Uri.parse('$baseUrl/api/display/$screenId/config');
-      final res = await http.get(url).timeout(const Duration(seconds: 8));
+      final res = await http.get(url, headers: await _getHeaders()).timeout(const Duration(seconds: 8));
+      _checkAuth(res);
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
@@ -112,11 +134,12 @@ class ApiService {
           return config;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e is AuthException) rethrow;
+    }
     return await StorageService.getCachedConfig();
   }
 
-  /// Authoritative REST State Reconciliation (Called on Boot & Socket Reconnect)
   static Future<ReconciliationResult?> reconcileState({
     required String screenId,
     int? appliedConfigVersion,
@@ -127,13 +150,14 @@ class ApiService {
       final url = Uri.parse('$baseUrl/api/display/$screenId/reconcile');
       final res = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: await _getHeaders(),
         body: jsonEncode({
           'appliedConfigVersion': appliedConfigVersion,
           'mediaManifestVersion': mediaManifestVersion,
           'playerVersion': AppConfig.appVersion,
         }),
       ).timeout(const Duration(seconds: 8));
+      _checkAuth(res);
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
@@ -152,11 +176,12 @@ class ApiService {
           );
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (e is AuthException) rethrow;
+    }
     return null;
   }
 
-  // Fallback REST Command Acknowledgment
   static Future<void> acknowledgeCommand({
     required String screenId,
     required String commandId,
@@ -165,15 +190,17 @@ class ApiService {
     try {
       final baseUrl = await getBaseUrl();
       final url = Uri.parse('$baseUrl/api/screens/$screenId/commands/$commandId/ack');
-      await http.post(
+      final res = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: await _getHeaders(),
         body: jsonEncode({'resultPayload': resultPayload ?? {}}),
       ).timeout(const Duration(seconds: 5));
-    } catch (_) {}
+      _checkAuth(res);
+    } catch (e) {
+      if (e is AuthException) rethrow;
+    }
   }
 
-  // Fallback REST Command Failure
   static Future<void> failCommand({
     required String screenId,
     required String commandId,
@@ -182,15 +209,17 @@ class ApiService {
     try {
       final baseUrl = await getBaseUrl();
       final url = Uri.parse('$baseUrl/api/screens/$screenId/commands/$commandId/fail');
-      await http.post(
+      final res = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: await _getHeaders(),
         body: jsonEncode({'errorMessage': errorMessage}),
       ).timeout(const Duration(seconds: 5));
-    } catch (_) {}
+      _checkAuth(res);
+    } catch (e) {
+      if (e is AuthException) rethrow;
+    }
   }
 
-  // Enhanced HTTP Fallback Heartbeat with rich diagnostics
   static Future<void> sendHeartbeat({
     required String screenId,
     required String currentContent,
@@ -202,9 +231,9 @@ class ApiService {
     try {
       final baseUrl = await getBaseUrl();
       final url = Uri.parse('$baseUrl/api/display/$screenId/heartbeat');
-      await http.post(
+      final res = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: await _getHeaders(),
         body: jsonEncode({
           'currentContent': currentContent,
           'playerVersion': AppConfig.appVersion,
@@ -214,6 +243,9 @@ class ApiService {
           'queueLastUpdateAt': queueLastUpdateAt,
         }),
       ).timeout(const Duration(seconds: 5));
-    } catch (_) {}
+      _checkAuth(res);
+    } catch (e) {
+      if (e is AuthException) rethrow;
+    }
   }
 }

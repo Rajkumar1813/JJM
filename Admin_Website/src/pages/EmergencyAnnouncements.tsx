@@ -11,16 +11,18 @@ import {
   Volume2,
   Languages,
 } from 'lucide-react';
-import { EmergencyAnnouncement, Screen } from '../types';
+import { EmergencyAnnouncement, Screen, Department } from '../types';
 import { api } from '../services/api';
 
 interface EmergencyAnnouncementsProps {
   screens: Screen[];
+  departments: Department[];
   onRefresh: () => void;
 }
 
 export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
   screens,
+  departments,
   onRefresh,
 }) => {
   const [activeAnnouncement, setActiveAnnouncement] = useState<EmergencyAnnouncement | null>(null);
@@ -28,13 +30,11 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
   const [duration, setDuration] = useState<number>(30); // in seconds, 0 = manual
   const [language, setLanguage] = useState<'en' | 'hi' | 'both'>('both');
   const [targetType, setTargetType] = useState<'ALL' | 'DEPARTMENT' | 'SCREEN'>('ALL');
-  const [selectedTargetId, setSelectedTargetId] = useState<string>('all');
+  const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [priority, setPriority] = useState<'critical' | 'high' | 'normal'>('critical');
 
-  const [heading, setHeading] = useState('CODE RED: MEDICAL EMERGENCY / आपातकालीन सूचना');
-  const [message, setMessage] = useState(
-    'Trauma resuscitation team report immediately to Casualty Ward 1. Non-critical OPD consultations are temporarily paused.'
-  );
+  const [heading, setHeading] = useState('');
+  const [message, setMessage] = useState('');
 
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   const [broadcasting, setBroadcasting] = useState(false);
@@ -93,7 +93,7 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
         highlightScreen: true,
         durationSeconds: duration > 0 ? duration : null,
         targetType,
-        targetIds: [selectedTargetId],
+        targetIds: targetType === 'ALL' ? ['all'] : selectedTargetIds,
       });
 
       if (res.data.success) {
@@ -270,7 +270,7 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
                     type="button"
                     onClick={() => {
                       setTargetType(t);
-                      setSelectedTargetId(t === 'ALL' ? 'all' : screens[0]?.id || 'all');
+                      setSelectedTargetIds([]);
                     }}
                     className={targetType === t ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm'}
                   >
@@ -280,14 +280,42 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
               </div>
             </div>
 
+            {targetType === 'DEPARTMENT' && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Select Departments (Ctrl/Cmd+Click for multiple)</label>
+                <select
+                  multiple
+                  className="form-select"
+                  value={selectedTargetIds}
+                  onChange={(e) => {
+                    const opts = Array.from(e.target.selectedOptions, option => option.value);
+                    setSelectedTargetIds(opts);
+                  }}
+                  required
+                  style={{ height: '100px' }}
+                >
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {targetType === 'SCREEN' && (
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Select Screen</label>
+                <label className="form-label">Select Screens (Ctrl/Cmd+Click for multiple)</label>
                 <select
+                  multiple
                   className="form-select"
-                  value={selectedTargetId}
-                  onChange={(e) => setSelectedTargetId(e.target.value)}
+                  value={selectedTargetIds}
+                  onChange={(e) => {
+                    const opts = Array.from(e.target.selectedOptions, option => option.value);
+                    setSelectedTargetIds(opts);
+                  }}
                   required
+                  style={{ height: '100px' }}
                 >
                   {screens.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -513,7 +541,7 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
                   color: '#A8A2B5',
                 }}
               >
-                <span>Target: {targetType === 'ALL' ? 'All Hospital Displays' : selectedTargetId}</span>
+                <span>Target: {targetType === 'ALL' ? 'All Hospital Displays' : selectedTargetIds.join(', ')}</span>
                 <span>Auto-Revert: {duration === 0 ? 'Manual Clear' : `${duration}s`}</span>
               </div>
             </div>

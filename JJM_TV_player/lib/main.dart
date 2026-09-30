@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'core/storage/storage_service.dart';
+import 'core/sync/media_cache_service.dart';
 import 'models/display_models.dart';
 import 'screens/pairing/pairing_view.dart';
 import 'screens/display/display_engine.dart';
@@ -20,6 +21,9 @@ void main() async {
   try {
     await WakelockPlus.enable();
   } catch (_) {}
+
+  // Initialize Media Cache
+  await MediaCacheService.init();
 
   // Check existing pairing credentials
   final credentials = await StorageService.getCredentials();

@@ -35,14 +35,12 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
   onClose,
   onRefreshList,
 }) => {
-  if (!isOpen || !screen) return null;
-
   const [activeTab, setActiveTab] = useState<'control' | 'commands' | 'settings'>('control');
-  const [queueUrl, setQueueUrl] = useState(screen.queueUrl);
-  const [name, setName] = useState(screen.name);
-  const [departmentId, setDepartmentId] = useState(screen.departmentId);
-  const [location, setLocation] = useState(screen.location);
-  const [staleThreshold, setStaleThreshold] = useState(screen.staleThresholdSeconds || 180);
+  const [queueUrl, setQueueUrl] = useState(screen?.queueUrl || '');
+  const [name, setName] = useState(screen?.name || '');
+  const [departmentId, setDepartmentId] = useState(screen?.departmentId || '');
+  const [location, setLocation] = useState(screen?.location || '');
+  const [staleThreshold, setStaleThreshold] = useState(screen?.staleThresholdSeconds || 180);
 
   const [isUpdating, setIsUpdating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -51,11 +49,13 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
   const [activeCommand, setActiveCommand] = useState<DeviceCommand | null>(null);
   const [recentCommands, setRecentCommands] = useState<DeviceCommand[]>([]);
   const [isExecutingCommand, setIsExecutingCommand] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<string | null>(null);
 
-  const dept = departments.find((d) => d.id === screen.departmentId);
-  const isOnline = screen.connectionStatus === 'online';
+  const dept = screen ? departments.find((d) => d.id === screen.departmentId) : undefined;
+  const isOnline = screen?.connectionStatus === 'online';
 
   const fetchRecentCommands = async () => {
+    if (!screen) return;
     try {
       const res = await api.get(`/screens/${screen.id}/commands`);
       if (res.data.success && res.data.commands) {
@@ -65,6 +65,17 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
   };
 
   useEffect(() => {
+    if (screen) {
+      setQueueUrl(screen.queueUrl || '');
+      setName(screen.name || '');
+      setDepartmentId(screen.departmentId || '');
+      setLocation(screen.location || '');
+      setStaleThreshold(screen.staleThresholdSeconds || 180);
+    }
+  }, [screen]);
+
+  useEffect(() => {
+    if (!screen) return;
     fetchRecentCommands();
 
     const socket = getSocket();
@@ -87,9 +98,22 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
     return () => {
       socket.off('command:status_updated', handleCommandUpdate);
     };
-  }, [screen.id]);
+  }, [screen?.id]);
+
+  useEffect(() => {
+    if (screen?.latestSnapshotTime) {
+      api.get(`/screens/${screen.id}/snapshot`)
+        .then((res) => {
+          if (res.data.success && res.data.image) {
+            setSnapshot(res.data.image);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [screen?.latestSnapshotTime, screen?.id]);
 
   const dispatchCommand = async (type: CommandType, payload: any = {}) => {
+    if (!screen) return;
     setIsExecutingCommand(type);
     setFeedback(null);
     try {
@@ -112,6 +136,7 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!screen) return;
     setIsUpdating(true);
     setFeedback(null);
     try {
@@ -130,6 +155,8 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
       setIsUpdating(false);
     }
   };
+
+  if (!isOpen || !screen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -256,9 +283,9 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
                     position: 'relative',
                   }}
                 >
-                  {screen.latestSnapshot ? (
+                  {screen.latestSnapshotTime && snapshot ? (
                     <img
-                      src={screen.latestSnapshot}
+                      src={snapshot}
                       alt="Screen Live Feed"
                       style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                     />

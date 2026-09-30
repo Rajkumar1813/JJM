@@ -77,17 +77,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         pinRefs[0].current?.focus();
       }
     } catch (err: any) {
-      // Fallback local auth if server is unreachable or route doesn't exist yet
-      if (
-        email.trim() === 'JJMads@Vibesoft.in' &&
-        password.trim() === 'JJM@#ads' &&
-        fullPin === '935989'
-      ) {
-        setAdminToken('LOCAL_FALLBACK_TOKEN_123');
-        localStorage.setItem('jjm_auth_user', email.trim());
-        onLoginSuccess();
-        return;
-      }
       const msg = err.response?.data?.message || 'Invalid credentials or PIN. Access denied.';
       setError(msg);
       setPin(['', '', '', '', '', '']);

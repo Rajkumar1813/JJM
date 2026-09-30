@@ -153,7 +153,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
     if (!confirm(`Send restart command to "${screen.name}"?`)) return;
     try {
       await api.post(`/screens/${screen.id}/command`, {
-        commandType: 'REBOOT_DEVICE',
+        commandType: 'RESTART_PLAYER',
         payload: { force: true },
       });
       alert('Restart command dispatched to TV.');
@@ -691,7 +691,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
                     className="form-input"
                     value={editQueueUrl}
                     onChange={(e) => setEditQueueUrl(e.target.value)}
-                    placeholder="https://hms.jjmhospitalkashipur.com/qd/DOC038"
+                    placeholder="https://hms.jjmhospitalkashipur.com/qd/123"
                     required
                   />
                 </div>

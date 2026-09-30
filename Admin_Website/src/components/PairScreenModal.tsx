@@ -16,8 +16,6 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
   departments,
   onScreenPaired,
 }) => {
-  if (!isOpen) return null;
-
   const [pairingCode, setPairingCode] = useState('');
   const [screenName, setScreenName] = useState('');
   const [departmentId, setDepartmentId] = useState(departments[0]?.id || '');
@@ -60,6 +58,8 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
       setLoading(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -138,7 +138,7 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
                 className="form-input"
                 value={screenName}
                 onChange={(e) => setScreenName(e.target.value)}
-                placeholder="e.g. OPD Room 5 — Doctor 038 TV"
+                placeholder="Enter screen name"
                 required
               />
             </div>
@@ -168,7 +168,7 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
                 className="form-input"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                placeholder="e.g. 1st Floor, OPD Ward Room 5"
+                placeholder="Enter location"
                 required
               />
             </div>
@@ -181,7 +181,7 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
                 className="form-input"
                 value={queueUrl}
                 onChange={(e) => setQueueUrl(e.target.value)}
-                placeholder="https://hms.jjmhospitalkashipur.com/qd/DOC038"
+                placeholder="https://..."
                 required
               />
             </div>

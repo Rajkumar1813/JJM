@@ -341,7 +341,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 className="form-input"
                 value={broadcastTitle}
                 onChange={(e) => setBroadcastTitle(e.target.value)}
-                placeholder="e.g. Free Eye Health Checkup OPD Announcement"
+                placeholder="Enter broadcast name"
                 required
               />
             </div>
@@ -472,7 +472,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <CheckCircle2 size={16} color="var(--primary)" />
                 <div>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-main)' }}>
-                    SQLite Storage & 5-Stage ACK
+                    MySQL Storage & 5-Stage ACK
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                     WAL journal active, commands transaction-audited

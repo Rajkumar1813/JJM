@@ -2,30 +2,25 @@ import { v4 as uuidv4 } from 'uuid';
 import { commandRepo } from '../db/repositories/commandRepository';
 import { screenRepo } from '../db/repositories/screenRepository';
 import { auditRepo } from '../db/repositories/miscRepositories';
-import { io } from '../server';
+import { getIO } from '../realtime/socket';
 import { CommandType, DeviceCommand } from '../types';
 import { Logger } from './logger';
 
 export class CommandService {
-  /**
-   * Dispatches a strictly targeted command to an exact physical TV.
-   * Command Lifecycle: CREATED -> SENT -> (TV sends: RECEIVED -> APPLIED -> ACKNOWLEDGED)
-   */
   public async dispatchCommand(
     screenId: string,
     commandType: CommandType,
     payload: any = {}
   ): Promise<DeviceCommand> {
-    const screen = screenRepo.getById(screenId);
+    const screen = await screenRepo.getById(screenId);
     if (!screen) {
       throw new Error(`Screen ${screenId} not found`);
     }
 
     const commandId = `CMD-${uuidv4().substring(0, 8).toUpperCase()}`;
-    const expiresAt = Date.now() + 35000; // 35 seconds expiration window
+    const expiresAt = Date.now() + 35000;
 
-    // 1. STAGE: CREATED in transactional SQLite database
-    const command = commandRepo.create({
+    const command = await commandRepo.create({
       id: commandId,
       screenId: screen.id,
       deviceId: screen.deviceId,
@@ -36,8 +31,8 @@ export class CommandService {
 
     Logger.command('CREATED', commandId, screenId, { commandType, payload });
 
-    // 2. STAGE: SENT over isolated screen socket room
-    if (io) {
+    try {
+      const io = getIO();
       const room = `screen:${screen.id}`;
       io.to(room).emit('device:command', {
         commandId: command.id,
@@ -47,120 +42,110 @@ export class CommandService {
         expiresAt: command.expiresAt,
       });
 
-      commandRepo.markSent(command.id);
+      await commandRepo.markSent(command.id);
       Logger.command('SENT', commandId, screenId, { room });
 
-      // Notify Admin Command Center that command was dispatched
-      io.emit('command:status_updated', {
+      io.to('admins').emit('command:status_updated', {
         commandId: command.id,
         screenId: screen.id,
         status: 'SENT',
         commandType: command.commandType,
       });
-    }
+    } catch(e) {}
 
-    auditRepo.log('DISPATCH_COMMAND', 'Screen', screen.id, `Dispatched ${commandType} (${commandId})`);
-    return commandRepo.getById(commandId)!;
+    await auditRepo.log('DISPATCH_COMMAND', 'Screen', screen.id, `Dispatched ${commandType} (${commandId})`);
+    return (await commandRepo.getById(commandId))!;
   }
 
-  /**
-   * TV acknowledges that the packet reached its network stack.
-   */
-  public handleReceived(commandId: string, screenId: string): DeviceCommand | null {
-    const cmd = commandRepo.markReceived(commandId);
+  public async handleReceived(commandId: string, screenId: string): Promise<DeviceCommand | null> {
+    const cmd = await commandRepo.markReceived(commandId);
     if (cmd) {
       Logger.command('RECEIVED', commandId, screenId);
-      if (io) {
-        io.emit('command:status_updated', {
+      try {
+        const io = getIO();
+        io.to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'RECEIVED',
           commandType: cmd.commandType,
         });
-      }
+      } catch(e) {}
     }
     return cmd;
   }
 
-  /**
-   * TV reports that the command was successfully applied to the hardware/engine.
-   */
-  public handleApplied(commandId: string, screenId: string): DeviceCommand | null {
-    const cmd = commandRepo.markApplied(commandId);
+  public async handleApplied(commandId: string, screenId: string): Promise<DeviceCommand | null> {
+    const cmd = await commandRepo.markApplied(commandId);
     if (cmd) {
       Logger.command('APPLIED', commandId, screenId);
-      if (io) {
-        io.emit('command:status_updated', {
+      try {
+        const io = getIO();
+        io.to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'APPLIED',
           commandType: cmd.commandType,
         });
-      }
+      } catch(e) {}
     }
     return cmd;
   }
 
-  /**
-   * Final step: TV sends formal completion acknowledgement with execution payload.
-   */
-  public handleAcknowledged(commandId: string, screenId: string, resultPayload: any = {}): DeviceCommand | null {
-    const cmd = commandRepo.markAcknowledged(commandId);
+  public async handleAcknowledged(commandId: string, screenId: string, resultPayload: any = {}): Promise<DeviceCommand | null> {
+    const cmd = await commandRepo.markAcknowledged(commandId);
     if (cmd) {
       Logger.command('ACKNOWLEDGED', commandId, screenId, { resultPayload });
 
-      // If command was SYNC_CONFIG and TV applied it, synchronize versions in DB
       if (cmd.commandType === 'SYNC_CONFIG' && resultPayload?.appliedConfigVersion) {
-        screenRepo.update(screenId, {
+        await screenRepo.update(screenId, {
           appliedConfigVersion: resultPayload.appliedConfigVersion,
           lastSyncAt: new Date().toISOString(),
         });
       }
 
-      if (io) {
-        io.emit('command:status_updated', {
+      try {
+        const io = getIO();
+        io.to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'ACKNOWLEDGED',
           commandType: cmd.commandType,
           resultPayload,
         });
-        io.emit('screens:changed');
-      }
+        io.to('admins').emit('screens:changed');
+      } catch(e) {}
 
-      auditRepo.log('COMMAND_ACK', 'Screen', screenId, `Command ${cmd.commandType} (${commandId}) successfully acknowledged`);
+      await auditRepo.log('COMMAND_ACK', 'Screen', screenId, `Command ${cmd.commandType} (${commandId}) successfully acknowledged`);
     }
     return cmd;
   }
 
-  /**
-   * TV reports failure to execute command.
-   */
-  public handleFailed(commandId: string, screenId: string, errorMessage: string): DeviceCommand | null {
-    const cmd = commandRepo.markFailed(commandId, errorMessage);
+  public async handleFailed(commandId: string, screenId: string, errorMessage: string): Promise<DeviceCommand | null> {
+    const cmd = await commandRepo.markFailed(commandId, errorMessage);
     if (cmd) {
       Logger.command('FAILED', commandId, screenId, { errorMessage });
-      if (io) {
-        io.emit('command:status_updated', {
+      try {
+        const io = getIO();
+        io.to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'FAILED',
           commandType: cmd.commandType,
           errorMessage,
         });
-      }
-      auditRepo.log('COMMAND_FAIL', 'Screen', screenId, `Command ${cmd.commandType} (${commandId}) FAILED: ${errorMessage}`);
+      } catch(e) {}
+      await auditRepo.log('COMMAND_FAIL', 'Screen', screenId, `Command ${cmd.commandType} (${commandId}) FAILED: ${errorMessage}`);
     }
     return cmd;
   }
 
-  /**
-   * Periodic watchdog that transitions unacknowledged commands to TIMEOUT
-   */
-  public reapTimeouts(): void {
-    const reaped = commandRepo.reapExpiredTimeouts(30000);
-    if (reaped > 0 && io) {
-      io.emit('commands:reaped', { reapedCount: reaped });
+  public async reapTimeouts(): Promise<void> {
+    const reaped = await commandRepo.reapExpiredTimeouts(30000);
+    if (reaped > 0) {
+      try {
+        const io = getIO();
+        io.to('admins').emit('commands:reaped', { reapedCount: reaped });
+      } catch(e) {}
     }
   }
 }

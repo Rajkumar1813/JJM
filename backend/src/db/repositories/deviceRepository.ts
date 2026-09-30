@@ -1,44 +1,47 @@
-import { sqlite } from '../sqlite';
+import { query, queryOne, execute } from '../mysql';
 import { Device } from '../../types';
+import { generateId, formatDateTimeToISO } from './repoUtils';
 
 export class DeviceRepository {
-  public getAll(): Device[] {
-    const rows = sqlite.prepare('SELECT * FROM devices ORDER BY last_seen_at DESC').all() as any[];
+  public async getAll(): Promise<Device[]> {
+    const rows = await query('SELECT * FROM devices ORDER BY last_seen_at DESC');
     return rows.map(r => this.mapRow(r));
   }
 
-  public getById(id: string): Device | undefined {
-    const r = sqlite.prepare('SELECT * FROM devices WHERE id = ?').get(id) as any;
+  public async getById(id: string): Promise<Device | undefined> {
+    const r = await queryOne('SELECT * FROM devices WHERE id = ?', [id]);
     return r ? this.mapRow(r) : undefined;
   }
 
-  public getByToken(token: string): Device | undefined {
-    const r = sqlite.prepare('SELECT * FROM devices WHERE device_token = ?').get(token) as any;
+  public async getByToken(token: string): Promise<Device | undefined> {
+    const r = await queryOne('SELECT * FROM devices WHERE device_token = ?', [token]);
     return r ? this.mapRow(r) : undefined;
   }
 
-  public upsert(device: {
-    id: string;
+  public async upsert(device: {
+    id?: string;
     deviceToken: string;
     platform: string;
     model?: string;
     appVersion: string;
     ipAddress?: string;
     macAddress?: string;
-  }): Device {
-    const now = new Date().toISOString();
-    sqlite.prepare(`
+  }): Promise<Device> {
+    const now = new Date();
+    const id = device.id || generateId('DEV');
+    
+    await execute(`
       INSERT INTO devices (id, device_token, platform, model, app_version, ip_address, mac_address, last_seen_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(device_token) DO UPDATE SET
-        platform = excluded.platform,
-        model = excluded.model,
-        app_version = excluded.app_version,
-        ip_address = excluded.ip_address,
-        mac_address = excluded.mac_address,
-        last_seen_at = excluded.last_seen_at
-    `).run(
-      device.id,
+      ON DUPLICATE KEY UPDATE 
+        platform = VALUES(platform),
+        model = VALUES(model),
+        app_version = VALUES(app_version),
+        ip_address = VALUES(ip_address),
+        mac_address = VALUES(mac_address),
+        last_seen_at = VALUES(last_seen_at)
+    `, [
+      id,
       device.deviceToken,
       device.platform,
       device.model || null,
@@ -47,13 +50,13 @@ export class DeviceRepository {
       device.macAddress || null,
       now,
       now
-    );
+    ]);
 
-    return this.getByToken(device.deviceToken)!;
+    return (await this.getByToken(device.deviceToken))!;
   }
 
-  public updateLastSeen(id: string): void {
-    sqlite.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  public async updateLastSeen(id: string): Promise<void> {
+    await execute('UPDATE devices SET last_seen_at = ? WHERE id = ?', [new Date(), id]);
   }
 
   private mapRow(r: any): Device {
@@ -65,8 +68,8 @@ export class DeviceRepository {
       appVersion: r.app_version,
       ipAddress: r.ip_address || undefined,
       macAddress: r.mac_address || undefined,
-      lastSeenAt: r.last_seen_at,
-      createdAt: r.created_at,
+      lastSeenAt: formatDateTimeToISO(r.last_seen_at)!,
+      createdAt: formatDateTimeToISO(r.created_at)!,
     };
   }
 }

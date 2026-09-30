@@ -22,7 +22,7 @@ import { api, clearAdminToken } from './services/api';
 import { getSocket, disconnectSocket } from './services/socket';
 
 export const App: React.FC = () => {
-  // Public Display Screen Route Check (e.g. /display/SCR-DOC038 or ?display=SCR-DOC038)
+  // Public Display Screen Route Check (e.g. /display/SCR-123 or ?display=SCR-123)
   const [displayScreenId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const path = window.location.pathname;
@@ -34,7 +34,7 @@ export const App: React.FC = () => {
     return params.get('display');
   });
 
-  // Authentication check: Authorized with ID JJMads@Vibesoft.in & Pass JJM@#ads & PIN 935989
+  // Authentication check
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
       return !!localStorage.getItem('jjm_auth_user');
@@ -42,6 +42,8 @@ export const App: React.FC = () => {
       return false;
     }
   });
+
+
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [screens, setScreens] = useState<Screen[]>([]);
@@ -69,6 +71,24 @@ export const App: React.FC = () => {
     setIsAuthenticated(false);
   }, []);
 
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      api.get('/auth/me').then((res) => {
+        if (!res.data.success) {
+          handleLogout();
+        }
+      }).catch(() => {
+        handleLogout();
+      }).finally(() => {
+        setAuthChecked(true);
+      });
+    } else {
+      setAuthChecked(true);
+    }
+  }, [isAuthenticated, handleLogout]);
+
 
   // Fetch all initial data
   const fetchData = async () => {
@@ -88,7 +108,7 @@ export const App: React.FC = () => {
       if (mediaRes.data.success) setMedia(mediaRes.data.media);
       if (plRes.data.success) setPlaylists(plRes.data.playlists);
       if (campRes.data.success) setCampaigns(campRes.data.campaigns);
-      if (auditRes.data.success) setAuditLogs(auditRes.data.logs);
+      if (auditRes.data.success) setAuditLogs(auditRes.data.auditLogs);
       if (emRes.data?.success && emRes.data.announcement?.isActive) {
         setHasActiveEmergency(true);
       } else {
@@ -146,6 +166,9 @@ export const App: React.FC = () => {
 
     socket.on('emergency:broadcast', () => { setHasActiveEmergency(true); });
     socket.on('emergency:dismiss', () => { setHasActiveEmergency(false); });
+    socket.on('screen:snapshot_updated', ({ screenId, latestSnapshotTime }) => {
+      setScreens((prev) => prev.map((s) => s.id === screenId ? { ...s, latestSnapshotTime } : s));
+    });
 
     return () => {
       window.removeEventListener('jjm:auth:expired', handleAuthExpired);
@@ -154,6 +177,7 @@ export const App: React.FC = () => {
       socket.off('screen:heartbeat_received');
       socket.off('emergency:broadcast');
       socket.off('emergency:dismiss');
+      socket.off('screen:snapshot_updated');
       if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
     };
   }, [isAuthenticated, handleLogout]);
@@ -164,7 +188,7 @@ export const App: React.FC = () => {
     return <PublicDisplayView screenId={displayScreenId} />;
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !authChecked) {
     return <Login onLoginSuccess={() => setIsAuthenticated(true)} />;
   }
 
@@ -274,7 +298,7 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'emergency' && (
-            <EmergencyAnnouncements screens={screens} onRefresh={fetchData} />
+            <EmergencyAnnouncements screens={screens} departments={departments} onRefresh={fetchData} />
           )}
 
           {activeTab === 'live-feeds' && (

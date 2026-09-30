@@ -54,7 +54,7 @@ export const PlaylistsPage: React.FC<PlaylistsPageProps> = ({
       {
         id: '2',
         type: 'image',
-        title: media[0]?.title || 'Cardiology Health Notice',
+        title: media[0]?.title || 'Placeholder Image',
         duration: 10,
         mediaId: media[0]?.id,
         mediaUrl: media[0]?.url,
@@ -70,7 +70,7 @@ export const PlaylistsPage: React.FC<PlaylistsPageProps> = ({
       {
         id: '4',
         type: 'video',
-        title: media.find((m) => m.type === 'video')?.title || 'Hospital Awareness Video',
+        title: media.find((m) => m.type === 'video')?.title || 'Placeholder Video',
         duration: 30,
         mediaId: media.find((m) => m.type === 'video')?.id,
         mediaUrl: media.find((m) => m.type === 'video')?.url,
@@ -95,7 +95,7 @@ export const PlaylistsPage: React.FC<PlaylistsPageProps> = ({
       title:
         type === 'queue'
           ? 'Doctor OPD Queue Display'
-          : media[0]?.title || 'Hospital Slide Content',
+          : media[0]?.title || 'Placeholder Image/Video',
       duration: type === 'queue' ? 20 : 15,
       mediaId: type !== 'queue' ? media[0]?.id : undefined,
       mediaUrl: type !== 'queue' ? media[0]?.url : undefined,

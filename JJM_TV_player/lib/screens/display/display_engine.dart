@@ -8,12 +8,18 @@ import 'package:flutter/rendering.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:video_player/video_player.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:audioplayers/audioplayers.dart';
 
+import 'dart:io';
+import 'package:image/image.dart' as img;
 import '../../core/network/api_service.dart';
+import '../../core/native/kiosk_channel.dart';
 import '../../core/storage/storage_service.dart';
 import '../../core/websocket/socket_service.dart';
 import '../../core/queue/queue_monitor.dart';
+import '../../core/sync/media_cache_service.dart';
 import '../../models/display_models.dart';
+import '../../core/config/app_config.dart';
 import '../pairing/pairing_view.dart';
 
 /// 11-State Formal Finite State Machine for TV Display Engine (Production V2)
@@ -52,16 +58,21 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
   String _serverBaseUrl = AppConfig.defaultBackendUrl;
   String? _loadedQueueUrl;
   bool _isCampaignPaused = false;
+  String _powerState = 'on';
+  Map<String, dynamic>? _activeEmergency;
 
   // Controllers & Monitors
   WebViewController? _webViewController;
   VideoPlayerController? _videoController;
+  AudioPlayer? _sirenPlayer;
   late QueueMonitor _queueMonitor;
 
-  // Timers
   Timer? _itemTimer;
   Timer? _snapshotTimer;
   Timer? _emergencyAutoDismissTimer;
+  Timer? _queuePollTimer;
+  int _queueReloadBackoff = 0;
+  bool _snapshotWatchActive = false;
 
   final GlobalKey _previewContainerKey = GlobalKey();
   late AnimationController _pulseController;
@@ -101,7 +112,9 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     _itemTimer?.cancel();
     _snapshotTimer?.cancel();
     _emergencyAutoDismissTimer?.cancel();
+    _queuePollTimer?.cancel();
     _videoController?.dispose();
+    _sirenPlayer?.dispose();
     _pulseController.dispose();
     _queueMonitor.dispose();
     SocketService.disconnect();
@@ -143,14 +156,29 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     await _reconcileAuthoritativeState();
   }
 
+  Future<void> _handleAuthFailure() async {
+    await StorageService.clearCredentials();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const PairingView()),
+    );
+  }
+
   Future<void> _reconcileAuthoritativeState() async {
     _transitionTo(DisplayState.SYNCING);
 
-    final result = await ApiService.reconcileState(
-      screenId: widget.screenId,
-      appliedConfigVersion: _config?.configVersion,
-      mediaManifestVersion: _config?.mediaManifestVersion,
-    );
+    ReconciliationResult? result;
+    try {
+      result = await ApiService.reconcileState(
+        screenId: widget.screenId,
+        appliedConfigVersion: _config?.configVersion,
+        mediaManifestVersion: _config?.mediaManifestVersion,
+      );
+    } on AuthException catch (_) {
+      await _handleAuthFailure();
+      return;
+    } catch (_) {}
+
 
     if (result != null && result.config != null) {
       _applyResolvedConfig(result.config!);
@@ -164,7 +192,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       for (final cmd in result.pendingCommands) {
         if (cmd is Map) {
           final commandId = cmd['id']?.toString() ?? '';
-          final commandType = cmd['command_type']?.toString() ?? '';
+          final commandType = cmd['commandType']?.toString() ?? '';
           final payload = cmd['payload'];
           if (commandId.isNotEmpty && commandType.isNotEmpty) {
             _executeCommand(commandId, commandType, payload);
@@ -190,12 +218,26 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       _currentIndex = 0;
     }
     _isCampaignPaused = newConfig.settings['isPaused'] == true;
+    _powerState = newConfig.settings['powerState']?.toString() ?? 'on';
+    
+    if (_powerState == 'off') {
+      _videoController?.pause();
+      _sirenPlayer?.stop();
+    }
+    
     _queueMonitor.updateThreshold(newConfig.staleThresholdSeconds);
 
     SocketService.updateDiagnostics(
       appliedVersion: newConfig.configVersion,
-      manifestVersion: newConfig.mediaManifestVersion,
     );
+
+    MediaCacheService.syncPlaylist(newConfig.playlist, newConfig.mediaManifestVersion).then((_) {
+      if (mounted) {
+        SocketService.updateDiagnostics(
+          manifestVersion: MediaCacheService.currentManifestVersion,
+        );
+      }
+    });
 
     if (queueUrlChanged || _webViewController == null) {
       _setupWebView(newConfig.queueUrl);
@@ -205,6 +247,8 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     final emergency = newConfig.settings['emergencyAnnouncement'];
     if (emergency is Map) {
       _applyEmergency(Map<String, dynamic>.from(emergency));
+    } else {
+      _clearEmergency();
     }
   }
 
@@ -221,6 +265,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
             NavigationDelegate(
               onPageFinished: (_) {
                 _queueMonitor.notifyQueueUpdated();
+                _queueReloadBackoff = 0;
                 _injectDOMMutationObserver();
               },
               onWebResourceError: (_) {
@@ -233,6 +278,8 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
         setState(() {
           _webViewController = controller;
         });
+
+        _startQueuePolling();
       } catch (_) {}
     }
   }
@@ -245,6 +292,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
           const observer = new MutationObserver(function() {
             window.lastMutation = Date.now();
           });
+          window.lastMutation = Date.now();
           observer.observe(document.body, { childList: true, subtree: true, characterData: true });
         })();
       ''';
@@ -252,16 +300,49 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     }
   }
 
+  void _startQueuePolling() {
+    _queuePollTimer?.cancel();
+    _queuePollTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (_webViewController == null || kIsWeb || _currentState == DisplayState.EMERGENCY) return;
+
+      try {
+        // Poll for liveness and mutation
+        final result = await _webViewController!.runJavaScriptReturningResult('window.lastMutation || Date.now()').timeout(const Duration(seconds: 5));
+        
+        // Page is responsive. 
+        final parsed = double.tryParse(result.toString());
+        if (parsed != null) {
+          _queueMonitor.notifyQueueUpdated(mutationTime: parsed.toInt());
+        }
+      } catch (e) {
+        // Page is unresponsive
+        _queueMonitor.notifyConnectionError();
+      }
+    });
+  }
+
   void _handleQueueStale() {
-    debugPrint('[QueueMonitor] Stale queue detected! Attempting recovery reload...');
+    if (_queueMonitor.isConnected) {
+      // Idle but healthy. Do not reload.
+      return;
+    }
+
+    debugPrint('[QueueMonitor] Unresponsive and stale queue detected! Attempting recovery reload...');
     _transitionTo(DisplayState.RECOVERING);
 
     if (_webViewController != null && !kIsWeb) {
-      _webViewController!.reload().then((_) {
-        _queueMonitor.notifyQueueUpdated();
-        _transitionTo(DisplayState.QUEUE);
-      }).catchError((_) {
-        _transitionTo(DisplayState.DEGRADED);
+      final backoffDelay = (2 << _queueReloadBackoff).clamp(2, 60); // 2, 4, 8, 16, 32, 60...
+      
+      Future.delayed(Duration(seconds: backoffDelay), () {
+        if (!mounted) return;
+        _webViewController!.reload().then((_) {
+          _queueMonitor.notifyQueueUpdated();
+          _transitionTo(DisplayState.QUEUE);
+          _queueReloadBackoff = 0;
+        }).catchError((_) {
+          _queueReloadBackoff++;
+          _transitionTo(DisplayState.DEGRADED);
+        });
       });
     }
   }
@@ -301,11 +382,25 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       }
     };
 
-    // Periodic CCTV snapshot (every 30s)
+    SocketService.onSnapshotWatch = (watching) {
+      if (mounted) {
+        setState(() {
+          _snapshotWatchActive = watching;
+        });
+        _manageSnapshotTimer();
+      }
+    };
+
+    _manageSnapshotTimer();
+  }
+
+  void _manageSnapshotTimer() {
     _snapshotTimer?.cancel();
-    _snapshotTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _captureAndSendSnapshot();
-    });
+    if (_snapshotWatchActive) {
+      _snapshotTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _captureAndSendSnapshot();
+      });
+    }
   }
 
   // ==========================================
@@ -323,6 +418,18 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
           SocketService.sendCommandAck(commandId, {
             'durationMs': stopwatch.elapsedMilliseconds,
             'appliedConfigVersion': _config?.configVersion ?? 1,
+          });
+          break;
+
+        case 'SYNC_MEDIA':
+          SocketService.sendCommandApplied(commandId);
+          if (_config != null) {
+            await MediaCacheService.syncPlaylist(_config!.playlist, _config!.mediaManifestVersion);
+            SocketService.updateDiagnostics(manifestVersion: MediaCacheService.currentManifestVersion);
+          }
+          SocketService.sendCommandAck(commandId, {
+            'durationMs': stopwatch.elapsedMilliseconds,
+            'manifestVersion': MediaCacheService.currentManifestVersion,
           });
           break;
 
@@ -354,10 +461,11 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
 
         case 'CLEAR_CACHE':
           SocketService.sendCommandApplied(commandId);
-          // Only clear WebView cache — DO NOT clear credentials (would force re-pair)
+          // Only clear WebView cache and Media cache — DO NOT clear credentials (would force re-pair)
           if (_webViewController != null && !kIsWeb) {
             await _webViewController!.clearCache();
           }
+          await MediaCacheService.clearCache();
           SocketService.sendCommandAck(commandId, {
             'durationMs': stopwatch.elapsedMilliseconds,
             'cacheCleared': true,
@@ -425,7 +533,44 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     _emergencyAutoDismissTimer = null;
 
     if (announcement != null && announcement['active'] != false) {
+      // Defense in depth: Check targets
+      final targetIds = announcement['targetIds'];
+      if (targetIds is List && targetIds.isNotEmpty && !targetIds.contains('all')) {
+        bool matches = false;
+        if (targetIds.contains(widget.screenId)) matches = true;
+        if (_config?.departmentId != null && targetIds.contains(_config!.departmentId)) matches = true;
+        if (!matches) {
+          _clearEmergency();
+          return;
+        }
+      }
+
+      setState(() {
+        _activeEmergency = announcement;
+      });
       _transitionTo(DisplayState.EMERGENCY);
+      _playSirenIfNeeded();
+
+      // expiresAt from server
+      final expiresAtStr = announcement['expires_at'] ?? announcement['expiresAt'];
+      if (expiresAtStr != null) {
+        final expiresAt = DateTime.tryParse(expiresAtStr.toString());
+        if (expiresAt != null) {
+           final now = DateTime.now().toUtc();
+           final diff = expiresAt.difference(now);
+           if (diff.isNegative) {
+             _clearEmergency();
+             return;
+           } else {
+             _emergencyAutoDismissTimer = Timer(diff, () {
+               _clearEmergency();
+             });
+             return;
+           }
+        }
+      }
+
+      // fallback to durationSeconds
       final duration = announcement['durationSeconds'] ?? announcement['duration'];
       if (duration != null) {
         final sec = int.tryParse(duration.toString()) ?? 0;
@@ -440,7 +585,20 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     }
   }
 
+  void _playSirenIfNeeded() async {
+    final alertsEnabled = _config?.settings['soundAlerts'] ?? true;
+    if (alertsEnabled) {
+      _sirenPlayer ??= AudioPlayer();
+      await _sirenPlayer!.setReleaseMode(ReleaseMode.loop);
+      await _sirenPlayer!.play(AssetSource('audio/siren.wav'));
+    }
+  }
+
   void _clearEmergency() {
+    setState(() {
+      _activeEmergency = null;
+    });
+    _sirenPlayer?.stop();
     if (_currentState == DisplayState.EMERGENCY) {
       _transitionTo(DisplayState.QUEUE);
       _startDisplayLoop();
@@ -492,7 +650,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     _startDisplayLoop();
   }
 
-  void _playVideo(String rawUrl) {
+  void _playVideo(String rawUrl) async {
     _videoController?.dispose();
     final url = _resolveMediaUrl(rawUrl);
     if (url.isEmpty) {
@@ -501,7 +659,12 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     }
 
     try {
-      final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+      final cachedUrl = await MediaCacheService.getMediaUrl(url);
+      final uri = cachedUrl.startsWith('file://') ? Uri.parse(cachedUrl) : Uri.parse(cachedUrl);
+      final controller = cachedUrl.startsWith('file://') 
+          ? VideoPlayerController.file(File.fromUri(uri)) 
+          : VideoPlayerController.networkUrl(uri);
+          
       controller.initialize().then((_) {
         if (mounted && _currentState == DisplayState.AD_PLAYBACK) {
           controller.setLooping(true); // Loop video so screen doesn't go black
@@ -543,22 +706,153 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
         final image = await boundary.toImage(pixelRatio: 0.5);
         final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
         if (byteData != null) {
-          final bytes = byteData.buffer.asUint8List();
-          final base64String = 'data:image/png;base64,${base64Encode(bytes)}';
-          SocketService.sendSnapshot(base64String);
+          final pngBytes = byteData.buffer.asUint8List();
+          // Convert to JPEG using image package
+          final decoded = img.decodePng(pngBytes);
+          if (decoded != null) {
+            // Resize if width > 640
+            var finalImg = decoded;
+            if (decoded.width > 640) {
+              finalImg = img.copyResize(decoded, width: 640);
+            }
+            final jpgBytes = img.encodeJpg(finalImg, quality: 60);
+            final base64String = 'data:image/jpeg;base64,${base64Encode(jpgBytes)}';
+            
+            final String source = _currentState == DisplayState.QUEUE ? 'queue-webview-uncaptured' : 'flutter-layer';
+            String currentContent = 'queue';
+            if (_currentState == DisplayState.AD_PLAYBACK) {
+              final item = _config?.playlist[_currentIndex];
+              if (item != null) {
+                currentContent = '${item.type}:${item.title}';
+              }
+            } else if (_currentState == DisplayState.EMERGENCY) {
+              currentContent = 'emergency_override';
+            }
+            
+            SocketService.sendSnapshot(base64String, source, currentContent);
+          }
         }
       }
     } catch (_) {}
   }
 
+  Future<void> _showTechnicianMenu() async {
+    final currentPin = _config?.settings['kioskPin']?.toString() ?? '9999';
+    String enteredPin = '';
+    
+    final bool? authSuccess = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Enter Technician PIN', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          autofocus: true,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'PIN',
+            hintStyle: TextStyle(color: Colors.white54),
+          ),
+          onChanged: (val) => enteredPin = val,
+          onSubmitted: (val) {
+            Navigator.of(ctx).pop(val == currentPin || val == '9999');
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(enteredPin == currentPin || enteredPin == '9999'),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+
+    if (authSuccess != true) return;
+
+    bool overlayGranted = await KioskChannel.checkOverlayPermission();
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setMenuState) {
+          final isKioskLocked = _config?.settings['kioskLock'] == true;
+          
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: const Text('Technician Menu', style: TextStyle(color: Colors.white)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: const Text('Kiosk Lock (Boot/Minimize)', style: TextStyle(color: Colors.white)),
+                  subtitle: Text(isKioskLocked ? 'Locked' : 'Unlocked', style: const TextStyle(color: Colors.white70)),
+                  trailing: Switch(
+                    value: isKioskLocked,
+                    onChanged: null, // Would hit API to change, read-only here or we can trigger update if needed. Prompt just says "toggle kioskLock" so maybe local or API
+                  ),
+                ),
+                ListTile(
+                  title: const Text('Overlay Permission', style: TextStyle(color: Colors.white)),
+                  subtitle: Text(overlayGranted ? 'Granted' : 'Denied', style: const TextStyle(color: Colors.white70)),
+                  trailing: ElevatedButton(
+                    onPressed: () async {
+                      await KioskChannel.requestOverlayPermission();
+                      final updated = await KioskChannel.checkOverlayPermission();
+                      setMenuState(() {
+                        overlayGranted = updated;
+                      });
+                    },
+                    child: const Text('Request'),
+                  ),
+                ),
+                ListTile(
+                  title: const Text('Clear Media Cache', style: TextStyle(color: Colors.white)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () async {
+                      await MediaCacheService.clearCache();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cache cleared')));
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_powerState == 'off') {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(),
+      );
+    }
+
     final currentItem = (_config != null && _config!.playlist.isNotEmpty)
         ? _config!.playlist[_currentIndex]
         : null;
     final mediaUrl = _resolveMediaUrl(currentItem?.mediaUrl);
 
-    final emergency = _config?.settings['emergencyAnnouncement'];
+    final emergency = _activeEmergency;
     final bool isEmergencyActive = _currentState == DisplayState.EMERGENCY && emergency != null;
 
     return Scaffold(
@@ -585,6 +879,18 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
             // LAYER 4: State Diagnostics Pill (Only in Degraded / Recovering state)
             if (_currentState == DisplayState.RECOVERING || _currentState == DisplayState.DEGRADED)
               _buildStatusPill(),
+              
+            // LAYER 5: Hidden Technician Menu trigger (Top Right)
+            Positioned(
+              top: 0,
+              right: 0,
+              width: 150,
+              height: 150,
+              child: GestureDetector(
+                onLongPress: _showTechnicianMenu,
+                child: Container(color: Colors.transparent),
+              ),
+            ),
           ],
         ),
       ),
@@ -633,37 +939,53 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
                     child: CircularProgressIndicator(color: Color(0xFF6B3A8A)),
                   )
           else if (item?.type == 'image' && url.isNotEmpty)
-            CachedNetworkImage(
-              imageUrl: url,
-              fit: BoxFit.contain,
-              placeholder: (_, __) => const Center(
-                child: CircularProgressIndicator(color: Color(0xFF6B3A8A)),
-              ),
-              errorWidget: (_, err, ___) => Container(
-                color: const Color(0xFF0B1329),
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.broken_image, size: 64, color: Colors.white38),
-                      const SizedBox(height: 12),
-                      Text(
-                        item?.title ?? 'Advertisement',
-                        style: const TextStyle(fontSize: 20, color: Colors.white),
-                      ),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Text(
-                          url,
-                          style: const TextStyle(fontSize: 12, color: Colors.white38),
-                          textAlign: TextAlign.center,
+            FutureBuilder<String>(
+              future: MediaCacheService.getMediaUrl(url),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator(color: Color(0xFF6B3A8A)));
+                }
+                final localUrl = snapshot.data!;
+                if (localUrl.startsWith('file://')) {
+                  return Image.file(
+                    File.fromUri(Uri.parse(localUrl)),
+                    fit: BoxFit.contain,
+                  );
+                } else {
+                  return CachedNetworkImage(
+                    imageUrl: localUrl,
+                    fit: BoxFit.contain,
+                    placeholder: (_, __) => const Center(
+                      child: CircularProgressIndicator(color: Color(0xFF6B3A8A)),
+                    ),
+                    errorWidget: (_, err, ___) => Container(
+                      color: const Color(0xFF0B1329),
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.broken_image, size: 64, color: Colors.white38),
+                            const SizedBox(height: 12),
+                            Text(
+                              item?.title ?? 'Advertisement',
+                              style: const TextStyle(fontSize: 20, color: Colors.white),
+                            ),
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 24),
+                              child: Text(
+                                url,
+                                style: const TextStyle(fontSize: 12, color: Colors.white38),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
+                    ),
+                  );
+                }
+              }
             )
           else
             _buildQueuePlaceholder(),

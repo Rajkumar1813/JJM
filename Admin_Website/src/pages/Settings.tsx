@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Building2,
@@ -13,7 +13,8 @@ import {
   Server,
   RefreshCw,
 } from 'lucide-react';
-import { getActiveBackendUrl } from '../services/api';
+import { api, getActiveBackendUrl } from '../services/api';
+import toast from 'react-hot-toast';
 
 export const SettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
@@ -21,24 +22,72 @@ export const SettingsPage: React.FC = () => {
   >('general');
 
   // Form states
-  const [hospitalName, setHospitalName] = useState('JJM Hospital');
-  const [hospitalBranch, setHospitalBranch] = useState('Kashipur, Uttarakhand');
-  const [supportPhone, setSupportPhone] = useState('+91 5947 274000');
+  const [hospitalName, setHospitalName] = useState('');
+  const [hospitalBranch, setHospitalBranch] = useState('');
+  const [supportPhone, setSupportPhone] = useState('');
   const [heartbeatInterval, setHeartbeatInterval] = useState(15);
   const [staleThreshold, setStaleThreshold] = useState(180);
   const [defaultDuration, setDefaultDuration] = useState(15);
   const [autoRebootTime, setAutoRebootTime] = useState('04:00');
   const [kioskLock, setKioskLock] = useState(true);
   const [soundAlerts, setSoundAlerts] = useState(true);
+  const [timezone, setTimezone] = useState('Asia/Kolkata');
 
-  const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const activeUrl = getActiveBackendUrl();
 
-  const handleSave = (e: React.FormEvent) => {
+  useEffect(() => {
+    fetchSettings();
+  }, []);
+
+  const fetchSettings = async () => {
+    try {
+      setLoading(true);
+      const res = await api.get('/settings');
+      if (res.data.success && res.data.settings) {
+        const s = res.data.settings;
+        if (s.hospitalName) setHospitalName(s.hospitalName);
+        if (s.hospitalBranch) setHospitalBranch(s.hospitalBranch);
+        if (s.supportPhone) setSupportPhone(s.supportPhone);
+        if (s.heartbeatInterval) setHeartbeatInterval(Number(s.heartbeatInterval));
+        if (s.staleThreshold) setStaleThreshold(Number(s.staleThreshold));
+        if (s.defaultDuration) setDefaultDuration(Number(s.defaultDuration));
+        if (s.autoRebootTime) setAutoRebootTime(s.autoRebootTime);
+        if (s.kioskLock !== undefined) setKioskLock(s.kioskLock === 'true' || s.kioskLock === true);
+        if (s.soundAlerts !== undefined) setSoundAlerts(s.soundAlerts === 'true' || s.soundAlerts === true);
+        if (s.timezone) setTimezone(s.timezone);
+      }
+    } catch (err: any) {
+      toast.error('Failed to load settings');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSavedFeedback('Settings saved successfully and applied to active configuration.');
-    setTimeout(() => setSavedFeedback(null), 3500);
+    setSaving(true);
+    try {
+      await api.put('/settings', {
+        hospitalName,
+        hospitalBranch,
+        supportPhone,
+        heartbeatInterval,
+        staleThreshold,
+        defaultDuration,
+        autoRebootTime,
+        kioskLock: kioskLock.toString(),
+        soundAlerts: soundAlerts.toString(),
+        timezone
+      });
+      toast.success('Settings saved successfully');
+    } catch (err: any) {
+      toast.error('Failed to save settings: ' + (err.response?.data?.message || err.message));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const navItems = [
@@ -51,6 +100,10 @@ export const SettingsPage: React.FC = () => {
     { id: 'users', label: 'Users & Roles', icon: Users },
     { id: 'security', label: 'Security & Auth', icon: Shield },
   ];
+
+  if (loading) {
+    return <div style={{ padding: '28px' }}>Loading settings...</div>;
+  }
 
   return (
     <div style={{ padding: '28px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -262,7 +315,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
 
                 <div style={{ padding: '12px', backgroundColor: 'var(--info-subtle)', borderRadius: 'var(--radius-sm)', border: '1px solid #C2DCFA', fontSize: '12px', color: '#1E5894' }}>
-                  Queue URLs are directly fetched from the JJM Hospital HMS gateway (e.g. <code>https://hms.jjmhospitalkashipur.com/qd/DOC038</code>) without modifying any doctor portal records.
+                  Queue URLs are directly fetched from the JJM Hospital HMS gateway (e.g. <code>https://hms.jjmhospitalkashipur.com/qd/123</code>) without modifying any doctor portal records.
                 </div>
               </>
             )}
@@ -336,38 +389,12 @@ export const SettingsPage: React.FC = () => {
                     Users & Roles
                   </h3>
                   <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                    Authorized personnel with permission to trigger emergency overrides and edit TV playlists.
+                    User management and role assignments are managed by the identity provider.
                   </p>
                 </div>
 
-                <div className="table-container">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>Operator</th>
-                        <th>Role</th>
-                        <th>Status</th>
-                        <th>PIN Authentication</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>
-                          <div style={{ fontWeight: 600, color: 'var(--dark)' }}>JJM Admin</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>JJMads@Vibesoft.in</div>
-                        </td>
-                        <td>
-                          <span className="badge badge-purple">Super Admin</span>
-                        </td>
-                        <td>
-                          <span className="badge badge-online">Active</span>
-                        </td>
-                        <td>
-                          <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>•••• 89</span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <div style={{ padding: '12px', backgroundColor: 'var(--bg-subtle)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', fontSize: '12px' }}>
+                  User provisioning is currently disabled from the web UI. Please configure via database.
                 </div>
               </>
             )}
@@ -401,32 +428,11 @@ export const SettingsPage: React.FC = () => {
               </>
             )}
 
-            {/* Feedback message */}
-            {savedFeedback && (
-              <div
-                style={{
-                  padding: '10px 14px',
-                  borderRadius: 'var(--radius-sm)',
-                  backgroundColor: 'var(--success-subtle)',
-                  border: '1px solid #C4F0E1',
-                  color: '#0E805E',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <CheckCircle2 size={16} />
-                <span>{savedFeedback}</span>
-              </div>
-            )}
-
             {/* Submit Action */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
-              <button type="submit" className="btn btn-primary">
+              <button type="submit" className="btn btn-primary" disabled={saving}>
                 <Save size={15} />
-                <span>Save Configuration</span>
+                <span>{saving ? 'Saving...' : 'Save Configuration'}</span>
               </button>
             </div>
           </form>

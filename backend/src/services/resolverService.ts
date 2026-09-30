@@ -7,31 +7,21 @@ import { emergencyRepo } from '../db/repositories/emergencyRepository';
 import { ResolvedDisplayConfig, Screen, Campaign, PlaylistItem } from '../types';
 
 export class ResolverService {
-  /**
-   * Resolves the authoritative display configuration for a given screen from SQLite.
-   * Deterministic priority order:
-   * 1. Target-aware Emergency Announcement
-   * 2. Active Scheduled Campaign (Screen > Department > Global)
-   * 3. Assigned Screen Playlist or Department Default Playlist
-   * 4. Fallback to Doctor OPD Queue
-   */
-  public resolveScreenConfig(screenId: string): ResolvedDisplayConfig {
-    const screen = screenRepo.getById(screenId);
+  public async resolveScreenConfig(screenId: string): Promise<ResolvedDisplayConfig> {
+    const screen = await screenRepo.getById(screenId);
     if (!screen) {
       throw new Error(`Screen with ID ${screenId} not found`);
     }
 
-    const department = departmentRepo.getById(screen.departmentId);
+    const department = await departmentRepo.getById(screen.departmentId);
     const departmentName = department?.name || 'Hospital Department';
     const queueUrl = screen.queueUrl || department?.defaultQueueUrl || 'https://hms.jjmhospitalkashipur.com/qd';
     const staleThresholdSeconds = screen.staleThresholdSeconds || 180;
     const configVersion = screen.targetConfigVersion || 1;
-    const mediaManifestVersion = mediaRepo.getManifestVersion();
+    const mediaManifestVersion = await mediaRepo.getManifestVersion();
 
-    // Check target-aware active emergency
-    const activeEmergency = emergencyRepo.getActive(screen.id, screen.departmentId);
+    const activeEmergency = await emergencyRepo.getActive(screen.id, screen.departmentId);
 
-    // If playback is paused, return queue-only
     if (screen.isPaused) {
       return {
         screenId: screen.id,
@@ -52,17 +42,16 @@ export class ResolverService {
           offlineMediaCached: true,
           isPaused: true,
           powerState: screen.powerState || 'on',
-          emergencyAnnouncement: activeEmergency,
+          emergencyAnnouncement: activeEmergency || undefined,
         },
       };
     }
 
-    // Resolve eligible targeted campaigns
-    const eligibleCampaigns = campaignRepo.getActiveForScreen(screen.id, screen.departmentId);
+    const eligibleCampaigns = await campaignRepo.getActiveForScreen(screen.id, screen.departmentId);
 
     if (eligibleCampaigns.length > 0) {
       const winningCampaign = eligibleCampaigns[0];
-      return this.buildConfigFromCampaign(
+      return await this.buildConfigFromCampaign(
         screen,
         departmentName,
         queueUrl,
@@ -70,17 +59,17 @@ export class ResolverService {
         configVersion,
         mediaManifestVersion,
         winningCampaign,
-        activeEmergency
+        activeEmergency || undefined
       );
     }
 
-    // Default Playlist resolution
-    let playlist = playlistRepo.getById(screen.playlistId || '');
+    let playlist = await playlistRepo.getById(screen.playlistId || '');
     if (!playlist && department?.defaultPlaylistId) {
-      playlist = playlistRepo.getById(department.defaultPlaylistId);
+      playlist = await playlistRepo.getById(department.defaultPlaylistId);
     }
     if (!playlist) {
-      playlist = playlistRepo.getAll().find(p => p.isDefault) || playlistRepo.getAll()[0];
+      const allPls = await playlistRepo.getAll();
+      playlist = allPls.find(p => p.isDefault) || allPls[0];
     }
 
     const playlistItems: PlaylistItem[] = playlist?.items.length
@@ -104,12 +93,12 @@ export class ResolverService {
         offlineMediaCached: true,
         isPaused: !!screen.isPaused,
         powerState: screen.powerState || 'on',
-        emergencyAnnouncement: activeEmergency,
+        emergencyAnnouncement: activeEmergency || undefined,
       },
     };
   }
 
-  private buildConfigFromCampaign(
+  private async buildConfigFromCampaign(
     screen: Screen,
     departmentName: string,
     queueUrl: string,
@@ -118,25 +107,22 @@ export class ResolverService {
     mediaManifestVersion: number,
     campaign: Campaign,
     emergency: any
-  ): ResolvedDisplayConfig {
+  ): Promise<ResolvedDisplayConfig> {
     let items: PlaylistItem[] = [];
 
-    // 1. Explicit playlist campaign (only if contentType is playlist or no media is specified)
     if (campaign.playlistId && (campaign.contentType === 'playlist' || (!campaign.mediaId && !campaign.mediaUrl))) {
-      const pl = playlistRepo.getById(campaign.playlistId);
+      const pl = await playlistRepo.getById(campaign.playlistId);
       if (pl && pl.items.length) {
         items = pl.items;
       }
     }
 
-    // 2. Only queue campaign
     if (!items.length && campaign.contentType === 'only_queue') {
       items = [{ id: 'camp-q-only', type: 'queue', title: 'Doctor Live Token Queue', duration: 30, order: 1 }];
     }
 
-    // 3. Media-based campaign (Single Image / Video / Banner)
     if (!items.length && (campaign.mediaId || campaign.mediaUrl)) {
-      const media = campaign.mediaId ? mediaRepo.getById(campaign.mediaId) : undefined;
+      const media = campaign.mediaId ? await mediaRepo.getById(campaign.mediaId) : undefined;
       const mediaUrl = campaign.mediaUrl || media?.url || '';
 
       const isVideo =
@@ -166,7 +152,6 @@ export class ResolverService {
         campaign.contentType === 'fullscreen_only';
 
       if (isFullscreenOnly) {
-        // Fullscreen ad only (Continuous single image or video playback — no queue)
         items = [
           {
             id: `camp-ad-${campaign.id}`,
@@ -179,8 +164,6 @@ export class ResolverService {
           },
         ];
       } else {
-        // Alternating Single Ad and Doctor OPD Queue
-        // CRITICAL: Put the Ad as ORDER 1 so it plays IMMEDIATELY when the campaign is activated!
         items = [
           {
             id: `camp-ad-${campaign.id}`,

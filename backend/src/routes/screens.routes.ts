@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import { screenRepo } from '../db/repositories/screenRepository';
-import { deviceRepo } from '../db/repositories/deviceRepository';
+import { departmentRepo } from '../db/repositories/departmentRepository';
 import { commandRepo } from '../db/repositories/commandRepository';
 import { auditRepo } from '../db/repositories/miscRepositories';
-import { departmentRepo } from '../db/repositories/departmentRepository';
 import { pairingService } from '../services/pairingService';
 import { resolverService } from '../services/resolverService';
 import { commandService } from '../services/commandService';
@@ -13,28 +13,59 @@ import { CommandType } from '../types';
 
 const router = Router();
 
-// GET all screens with accurate health states
-router.get('/', (req: Request, res: Response) => {
-  const screens = screenRepo.getAll().map(s => {
-    const health = healthMonitor.evaluateScreenHealth(s);
+const createScreenSchema = z.object({
+  name: z.string().min(1),
+  code: z.string().optional(),
+  departmentId: z.string().min(1),
+  location: z.string().optional(),
+  queueUrl: z.string().url(),
+  playlistId: z.string().optional(),
+  staleThresholdSeconds: z.number().optional(),
+});
+
+const updateScreenSchema = createScreenSchema.partial();
+
+const pairSessionSchema = z.object({
+  socketId: z.string().optional(),
+  deviceMetadata: z.any().optional(),
+});
+
+const pairClaimSchema = z.object({
+  pairingCode: z.string().min(1),
+  name: z.string().min(1),
+  code: z.string().optional(),
+  departmentId: z.string().min(1),
+  location: z.string().optional(),
+  queueUrl: z.string().url(),
+  staleThresholdSeconds: z.number().optional(),
+});
+
+const commandSchema = z.object({
+  commandType: z.string().min(1),
+  payload: z.any().optional(),
+});
+
+router.get('/', async (req: Request, res: Response) => {
+  const screensList = await screenRepo.getAll();
+  const screens = await Promise.all(screensList.map(async (s) => {
+    const health = await healthMonitor.evaluateScreenHealth(s);
     return {
       ...s,
       healthStatus: health,
       connectionStatus: health === 'OFFLINE' ? 'offline' : 'online',
     };
-  });
+  }));
   res.json({ success: true, screens });
 });
 
-// GET screen by ID with resolved config
-router.get('/:id', (req: Request, res: Response) => {
-  const screen = screenRepo.getById(req.params.id);
+router.get('/:id', async (req: Request, res: Response) => {
+  const screen = await screenRepo.getById(req.params.id);
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
   try {
-    const resolvedConfig = resolverService.resolveScreenConfig(screen.id);
-    const health = healthMonitor.evaluateScreenHealth(screen);
+    const resolvedConfig = await resolverService.resolveScreenConfig(screen.id);
+    const health = await healthMonitor.evaluateScreenHealth(screen);
     return res.json({
       success: true,
       screen: { ...screen, healthStatus: health },
@@ -45,17 +76,18 @@ router.get('/:id', (req: Request, res: Response) => {
   }
 });
 
-// POST Create screen manually
-router.post('/', (req: Request, res: Response) => {
-  const { name, code, departmentId, location, queueUrl, playlistId, staleThresholdSeconds } = req.body;
-  if (!name || !departmentId || !queueUrl) {
-    return res.status(400).json({ success: false, message: 'Missing required fields (name, departmentId, queueUrl)' });
+router.post('/', async (req: Request, res: Response) => {
+  const parsed = createScreenSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
   }
+
+  const { name, code, departmentId, location, queueUrl, playlistId, staleThresholdSeconds } = parsed.data;
 
   const screenCode = code || `DOC${Math.floor(100 + Math.random() * 900)}`;
   const screenId = `SCR-${screenCode}`;
 
-  const screen = screenRepo.create({
+  const screen = await screenRepo.create({
     id: screenId,
     name,
     code: screenCode,
@@ -72,65 +104,71 @@ router.post('/', (req: Request, res: Response) => {
     currentContent: 'queue',
     currentCampaignId: null,
     playlistId: playlistId || 'PL-DEFAULT',
-    deviceToken: null,
+    deviceToken: null as any,
     playerVersion: '1.0.0',
     lastHeartbeat: null,
   });
 
-  auditRepo.log('CREATE_SCREEN', 'Screen', screen.id, `Created screen ${screen.name}`);
+  await auditRepo.log('CREATE_SCREEN', 'Screen', screen.id, `Created screen ${screen.name}`);
   return res.status(201).json({ success: true, screen });
 });
 
-// PATCH Update screen (increments targetConfigVersion)
-router.patch('/:id', (req: Request, res: Response) => {
-  const existing = screenRepo.getById(req.params.id);
+router.patch('/:id', async (req: Request, res: Response) => {
+  const parsed = updateScreenSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
+  }
+
+  const existing = await screenRepo.getById(req.params.id);
   if (!existing) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
 
-  // Validate departmentId if provided
-  if (req.body.departmentId) {
-    const dept = departmentRepo.getById(req.body.departmentId);
+  if (parsed.data.departmentId) {
+    const dept = await departmentRepo.getById(parsed.data.departmentId);
     if (!dept) {
-      return res.status(400).json({ success: false, message: `Department '${req.body.departmentId}' not found` });
+      return res.status(400).json({ success: false, message: `Department '${parsed.data.departmentId}' not found` });
     }
   }
 
-  // Increment authoritative target config version so version divergence is tracked
   const newTargetVersion = existing.targetConfigVersion + 1;
 
-  const updated = screenRepo.update(req.params.id, {
-    ...req.body,
+  const updated = await screenRepo.update(req.params.id, {
+    ...parsed.data,
     targetConfigVersion: newTargetVersion,
   });
 
   if (io) {
-    const config = resolverService.resolveScreenConfig(existing.id);
+    const config = await resolverService.resolveScreenConfig(existing.id);
     io.to(`screen:${existing.id}`).emit('config:update', { config, targetConfigVersion: newTargetVersion });
-    io.emit('screens:changed');
+    io.to('admins').emit('screens:changed');
   }
 
-  auditRepo.log('UPDATE_SCREEN', 'Screen', existing.id, `Updated screen params (targetConfigVersion: ${newTargetVersion})`);
+  await auditRepo.log('UPDATE_SCREEN', 'Screen', existing.id, `Updated screen params (targetConfigVersion: ${newTargetVersion})`);
   return res.json({ success: true, screen: updated });
 });
 
+router.post('/pair-session', async (req: Request, res: Response) => {
+  const parsed = pairSessionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
+  }
 
-// POST TV generates pairing code
-router.post('/pair-session', (req: Request, res: Response) => {
-  const { socketId, deviceMetadata } = req.body;
-  const session = pairingService.createPairingSession(socketId, deviceMetadata);
+  const { socketId, deviceMetadata } = parsed.data;
+  const session = await pairingService.createPairingSession(socketId, deviceMetadata);
   return res.json({ success: true, session });
 });
 
-// POST Admin claims pairing code
-router.post('/pair-claim', (req: Request, res: Response) => {
-  const { pairingCode, name, code, departmentId, location, queueUrl, staleThresholdSeconds } = req.body;
-  if (!pairingCode || !name || !departmentId || !queueUrl) {
-    return res.status(400).json({ success: false, message: 'Missing required pairing fields' });
+router.post('/pair-claim', async (req: Request, res: Response) => {
+  const parsed = pairClaimSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
   }
 
+  const { pairingCode, name, code, departmentId, location, queueUrl, staleThresholdSeconds } = parsed.data;
+
   try {
-    const { screen, session } = pairingService.pairScreen(pairingCode, {
+    const { screen, session } = await pairingService.pairScreen(pairingCode, {
       name,
       code,
       departmentId,
@@ -140,18 +178,13 @@ router.post('/pair-claim', (req: Request, res: Response) => {
     });
 
     if (io) {
-      io.emit(`pair:${pairingCode}`, {
+      io.to(`pairing:${pairingCode}`).emit(`pairing:success`, {
         success: true,
         screenId: screen.id,
         deviceToken: session.deviceToken,
         screen,
       });
-      io.to(`pairing:${pairingCode}`).emit('paired', {
-        screenId: screen.id,
-        deviceToken: session.deviceToken,
-        screen,
-      });
-      io.emit('screens:changed');
+      io.to('admins').emit('screens:changed');
     }
 
     return res.json({ success: true, screen, session });
@@ -160,25 +193,23 @@ router.post('/pair-claim', (req: Request, res: Response) => {
   }
 });
 
-// POST Unpair screen
-router.post('/:id/unpair', (req: Request, res: Response) => {
-  const screen = pairingService.unpairScreen(req.params.id);
+router.post('/:id/unpair', async (req: Request, res: Response) => {
+  const screen = await pairingService.unpairScreen(req.params.id);
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
 
   if (io) {
     io.to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
-    io.emit('screen:unpaired', { screenId: screen.id });
-    io.emit('screens:changed');
+    io.to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
+    io.to('admins').emit('screens:changed');
   }
 
   return res.json({ success: true, message: 'Screen unpaired successfully' });
 });
 
-// DELETE Screen
-router.delete('/:id', (req: Request, res: Response) => {
-  const screen = screenRepo.getById(req.params.id);
+router.delete('/:id', async (req: Request, res: Response) => {
+  const screen = await screenRepo.getById(req.params.id);
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
@@ -188,8 +219,8 @@ router.delete('/:id', (req: Request, res: Response) => {
     io.emit('screen:unpaired', { screenId: screen.id });
   }
 
-  screenRepo.delete(screen.id);
-  auditRepo.log('DELETE_SCREEN', 'Screen', screen.id, `Permanently deleted screen ${screen.name}`);
+  await screenRepo.delete(screen.id);
+  await auditRepo.log('DELETE_SCREEN', 'Screen', screen.id, `Permanently deleted screen ${screen.name}`);
 
   if (io) {
     io.emit('screens:changed');
@@ -198,16 +229,13 @@ router.delete('/:id', (req: Request, res: Response) => {
   return res.json({ success: true, message: 'Screen deleted successfully' });
 });
 
-// ==========================================
-// TARGETED TV COMMAND CENTER ENDPOINTS (V2)
-// ==========================================
-
-// POST Dispatch targeted command to exact physical screen (supports both /command and /commands)
 router.post(['/:id/commands', '/:id/command'], async (req: Request, res: Response) => {
-  const { commandType, payload } = req.body;
-  if (!commandType) {
-    return res.status(400).json({ success: false, message: 'commandType is required' });
+  const parsed = commandSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
   }
+
+  const { commandType, payload } = parsed.data;
 
   try {
     const command = await commandService.dispatchCommand(req.params.id, commandType as CommandType, payload);
@@ -217,79 +245,80 @@ router.post(['/:id/commands', '/:id/command'], async (req: Request, res: Respons
   }
 });
 
-// GET Recent commands for a screen (supports both /commands and /command/history)
-router.get(['/:id/commands', '/:id/command/history'], (req: Request, res: Response) => {
-  const commands = commandRepo.getRecentForScreen(req.params.id, 15);
+router.get(['/:id/commands', '/:id/command/history'], async (req: Request, res: Response) => {
+  const commands = await commandRepo.getRecentForScreen(req.params.id, 15);
   return res.json({ success: true, commands });
 });
 
-// POST TV acknowledges receipt of command (STAGE: RECEIVED)
-router.post(['/:id/commands/:commandId/received', '/:id/command/:commandId/received'], (req: Request, res: Response) => {
-  const cmd = commandService.handleReceived(req.params.commandId, req.params.id);
+router.post(['/:id/commands/:commandId/received', '/:id/command/:commandId/received'], async (req: Request, res: Response) => {
+  const cmd = await commandService.handleReceived(req.params.commandId, req.params.id);
   return res.json({ success: true, command: cmd });
 });
 
-// POST TV reports command applied (STAGE: APPLIED)
-router.post(['/:id/commands/:commandId/applied', '/:id/command/:commandId/applied'], (req: Request, res: Response) => {
-  const cmd = commandService.handleApplied(req.params.commandId, req.params.id);
+router.post(['/:id/commands/:commandId/applied', '/:id/command/:commandId/applied'], async (req: Request, res: Response) => {
+  const cmd = await commandService.handleApplied(req.params.commandId, req.params.id);
   return res.json({ success: true, command: cmd });
 });
 
-// POST TV acknowledges command completion (STAGE: ACKNOWLEDGED)
-router.post(['/:id/commands/:commandId/ack', '/:id/command/:commandId/ack'], (req: Request, res: Response) => {
+router.post(['/:id/commands/:commandId/ack', '/:id/command/:commandId/ack'], async (req: Request, res: Response) => {
   const { resultPayload } = req.body;
-  const cmd = commandService.handleAcknowledged(req.params.commandId, req.params.id, resultPayload);
+  const cmd = await commandService.handleAcknowledged(req.params.commandId, req.params.id, resultPayload);
   return res.json({ success: true, command: cmd });
 });
 
-// POST TV reports command failure (STAGE: FAILED)
-router.post(['/:id/commands/:commandId/fail', '/:id/command/:commandId/fail'], (req: Request, res: Response) => {
+router.post(['/:id/commands/:commandId/fail', '/:id/command/:commandId/fail'], async (req: Request, res: Response) => {
   const { errorMessage } = req.body;
-  const cmd = commandService.handleFailed(req.params.commandId, req.params.id, errorMessage || 'Unknown execution error');
+  const cmd = await commandService.handleFailed(req.params.commandId, req.params.id, errorMessage || 'Unknown execution error');
   return res.json({ success: true, command: cmd });
 });
 
-// POST Toggle screen pause/resume
-router.post('/:id/toggle-pause', (req: Request, res: Response) => {
-  const screen = screenRepo.getById(req.params.id);
+router.post('/:id/toggle-pause', async (req: Request, res: Response) => {
+  const screen = await screenRepo.getById(req.params.id);
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
   const newPaused = !screen.isPaused;
-  const updated = screenRepo.update(screen.id, { isPaused: newPaused });
+  const updated = await screenRepo.update(screen.id, { isPaused: newPaused });
 
   if (io) {
-    const config = resolverService.resolveScreenConfig(screen.id);
+    const config = await resolverService.resolveScreenConfig(screen.id);
     io.to(`screen:${screen.id}`).emit('config:update', { config });
-    io.emit('screens:changed');
+    io.to('admins').emit('screens:changed');
   }
 
-  auditRepo.log('TOGGLE_PAUSE', 'Screen', screen.id, `Toggled playback pause: ${newPaused ? 'PAUSED' : 'RESUMED'}`);
+  await auditRepo.log('TOGGLE_PAUSE', 'Screen', screen.id, `Toggled playback pause: ${newPaused ? 'PAUSED' : 'RESUMED'}`);
   return res.json({ success: true, isPaused: newPaused, screen: updated });
 });
 
-// POST Update screen hardware power state
-router.post('/:id/power', (req: Request, res: Response) => {
-  const { state } = req.body;
-  const screen = screenRepo.getById(req.params.id);
+const powerSchema = z.object({
+  state: z.string(),
+});
+
+router.post('/:id/power', async (req: Request, res: Response) => {
+  const parsed = powerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
+  }
+
+  const { state } = parsed.data;
+  const screen = await screenRepo.getById(req.params.id);
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
 
   const powerState = state === 'off' ? 'off' : 'on';
-  const updated = screenRepo.update(screen.id, { powerState });
+  const updated = await screenRepo.update(screen.id, { powerState });
 
   if (io) {
-    const config = resolverService.resolveScreenConfig(screen.id);
+    const config = await resolverService.resolveScreenConfig(screen.id);
     io.to(`screen:${screen.id}`).emit('config:update', { config });
-    io.emit('screens:changed');
+    io.to('admins').emit('screens:changed');
   }
 
-  auditRepo.log('POWER_STATE', 'Screen', screen.id, `Set screen power state to ${powerState}`);
+  await auditRepo.log('POWER_STATE', 'Screen', screen.id, `Set screen power state to ${powerState}`);
   return res.json({ success: true, powerState, screen: updated });
 });
 
-// Backwards-compatible convenience routes routing to the formal Command Lifecycle
 router.post(['/:id/refresh', '/:id/sync'], async (req: Request, res: Response) => {
   const command = await commandService.dispatchCommand(req.params.id, 'SYNC_CONFIG');
   return res.json({ success: true, message: 'Sync config command dispatched', command });
@@ -313,6 +342,14 @@ router.post('/:id/clear-cache', async (req: Request, res: Response) => {
 router.post('/:id/request-snapshot', async (req: Request, res: Response) => {
   const command = await commandService.dispatchCommand(req.params.id, 'TAKE_SNAPSHOT');
   return res.json({ success: true, message: 'Snapshot command dispatched', command });
+});
+
+router.get('/:id/snapshot', async (req: Request, res: Response) => {
+  const snap = await screenRepo.getSnapshot(req.params.id);
+  if (!snap || !snap.image) {
+    return res.status(404).json({ success: false, message: 'No snapshot available' });
+  }
+  return res.json({ success: true, image: snap.image, capturedAt: snap.time });
 });
 
 export default router;

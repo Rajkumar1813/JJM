@@ -1,65 +1,65 @@
-import { sqlite } from '../sqlite';
+import { query, queryOne, execute, withTransaction } from '../mysql';
 import { MediaItem } from '../../types';
+import { generateId, buildUpdateQuery, formatDateTimeToISO, safeJson } from './repoUtils';
 
 export class MediaRepository {
-  public getAll(): MediaItem[] {
-    const rows = sqlite.prepare('SELECT * FROM media ORDER BY created_at DESC').all() as any[];
+  public async getAll(): Promise<MediaItem[]> {
+    const rows = await query('SELECT * FROM media ORDER BY created_at DESC');
     return rows.map(r => this.mapRow(r));
   }
 
-  public getById(id: string): MediaItem | undefined {
-    const r = sqlite.prepare('SELECT * FROM media WHERE id = ?').get(id) as any;
+  public async getById(id: string): Promise<MediaItem | undefined> {
+    const r = await queryOne('SELECT * FROM media WHERE id = ?', [id]);
     return r ? this.mapRow(r) : undefined;
   }
 
-  public create(media: Omit<MediaItem, 'id' | 'createdAt'> & { id?: string }): MediaItem {
-    const id = media.id || `MED-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-    const createdAt = new Date().toISOString();
+  public async create(media: Omit<MediaItem, 'id' | 'createdAt'> & { id?: string }): Promise<MediaItem> {
+    const id = media.id || generateId('MED');
+    const createdAt = new Date();
 
-    sqlite.prepare(`
-      INSERT INTO media (
-        id, title, type, url, sha256_hash, file_size, duration, dimensions, tags, category, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      media.title,
-      media.type,
-      media.url,
-      media.sha256Hash || 'legacy_unhashed',
-      media.fileSize || 0,
-      media.duration || 15,
-      media.dimensions || null,
-      JSON.stringify(media.tags || []),
-      media.category || 'General',
-      createdAt
-    );
+    await withTransaction(async (conn) => {
+      await conn.execute(`
+        INSERT INTO media (
+          id, title, type, url, sha256_hash, file_size, duration, dimensions, tags, category, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        id,
+        media.title,
+        media.type,
+        media.url,
+        media.sha256Hash || 'legacy_unhashed',
+        media.fileSize || 0,
+        media.duration || 15,
+        media.dimensions || null,
+        JSON.stringify(media.tags || []),
+        media.category || 'General',
+        createdAt
+      ]);
 
-    // Bump global media manifest version
-    sqlite.prepare("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'").run(createdAt);
+      await conn.execute("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'", [createdAt]);
+    });
 
-    return this.getById(id)!;
+    return (await this.getById(id))!;
   }
 
-  public delete(id: string): boolean {
-    const res = sqlite.prepare('DELETE FROM media WHERE id = ?').run(id);
-    if (res.changes > 0) {
-      sqlite.prepare("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'").run(new Date().toISOString());
-      return true;
-    }
-    return false;
+  public async delete(id: string): Promise<boolean> {
+    let affected = 0;
+    await withTransaction(async (conn) => {
+      const [res] = await conn.execute<any>('DELETE FROM media WHERE id = ?', [id]);
+      if (res.affectedRows > 0) {
+        affected = res.affectedRows;
+        await conn.execute("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'", [new Date()]);
+      }
+    });
+    return affected > 0;
   }
 
-  public getManifestVersion(): number {
-    const r = sqlite.prepare("SELECT version_number FROM system_versions WHERE id = 'MEDIA_MANIFEST'").get() as any;
+  public async getManifestVersion(): Promise<number> {
+    const r = await queryOne<any>("SELECT version_number FROM system_versions WHERE id = 'MEDIA_MANIFEST'");
     return r ? r.version_number : 1;
   }
 
   private mapRow(r: any): MediaItem {
-    let tags = [];
-    try {
-      tags = r.tags ? JSON.parse(r.tags) : [];
-    } catch (_) {}
-
     return {
       id: r.id,
       title: r.title,
@@ -69,9 +69,9 @@ export class MediaRepository {
       fileSize: r.file_size,
       duration: r.duration,
       dimensions: r.dimensions || undefined,
-      tags,
+      tags: safeJson(r.tags, []),
       category: r.category,
-      createdAt: r.created_at,
+      createdAt: formatDateTimeToISO(r.created_at)!,
     };
   }
 }

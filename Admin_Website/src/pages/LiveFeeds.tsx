@@ -36,6 +36,24 @@ export const LiveFeeds: React.FC<LiveFeedsProps> = ({
   const [gridCols, setGridCols] = useState<number>(3); // 2, 3, or 4 columns
   const [fullscreenFeed, setFullscreenFeed] = useState<Screen | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [snapshots, setSnapshots] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    screens.forEach((screen) => {
+      if (screen.latestSnapshotTime) {
+        const cacheKey = `${screen.id}_${screen.latestSnapshotTime}`;
+        if (!snapshots[cacheKey]) {
+          api.get(`/screens/${screen.id}/snapshot`)
+            .then((res) => {
+              if (res.data.success && res.data.image) {
+                setSnapshots((prev) => ({ ...prev, [cacheKey]: res.data.image }));
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    });
+  }, [screens, snapshots]);
 
   const filteredScreens = screens.filter(
     (s) => selectedDept === 'all' || s.departmentId === selectedDept
@@ -45,7 +63,7 @@ export const LiveFeeds: React.FC<LiveFeedsProps> = ({
     setIsRefreshing(true);
     try {
       await api.post(`/screens/${screenId}/command`, {
-        commandType: 'CAPTURE_SNAPSHOT',
+        commandType: 'TAKE_SNAPSHOT',
       });
       setTimeout(() => {
         onRefresh();
@@ -183,9 +201,9 @@ export const LiveFeeds: React.FC<LiveFeedsProps> = ({
                     justifyContent: 'center',
                   }}
                 >
-                  {screen.latestSnapshot ? (
+                  {screen.latestSnapshotTime && snapshots[`${screen.id}_${screen.latestSnapshotTime}`] ? (
                     <img
-                      src={screen.latestSnapshot}
+                      src={snapshots[`${screen.id}_${screen.latestSnapshotTime}`]}
                       alt={screen.name}
                       style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                     />
@@ -326,9 +344,9 @@ export const LiveFeeds: React.FC<LiveFeedsProps> = ({
 
             <div className="modal-body" style={{ padding: '16px', backgroundColor: '#0B0A11' }}>
               <div style={{ width: '100%', aspectRatio: '16 / 9', position: 'relative' }}>
-                {fullscreenFeed.latestSnapshot ? (
+                {fullscreenFeed.latestSnapshotTime && snapshots[`${fullscreenFeed.id}_${fullscreenFeed.latestSnapshotTime}`] ? (
                   <img
-                    src={fullscreenFeed.latestSnapshot}
+                    src={snapshots[`${fullscreenFeed.id}_${fullscreenFeed.latestSnapshotTime}`]}
                     alt={fullscreenFeed.name}
                     style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                   />

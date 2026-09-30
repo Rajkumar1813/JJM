@@ -503,7 +503,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
                     className="form-input"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. Free Cardiology Checkup Camp"
+                    placeholder="Enter campaign name"
                     required
                   />
                 </div>

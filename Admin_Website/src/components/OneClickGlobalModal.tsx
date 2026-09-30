@@ -140,7 +140,7 @@ export const OneClickGlobalModal: React.FC<OneClickGlobalModalProps> = ({
                 className="form-input"
                 value={campaignName}
                 onChange={(e) => setCampaignName(e.target.value)}
-                placeholder="e.g. Hospital Health Awareness Notice"
+                placeholder="Enter broadcast name"
                 required
               />
             </div>

@@ -22,6 +22,7 @@ class SocketService {
   static Function(bool isConnected)? onConnectionChanged;
   static Function(Map<String, dynamic>? announcement)? onEmergencyUpdate;
   static Function()? onRequestSnapshot;
+  static Function(bool watching)? onSnapshotWatch;
 
   static Future<void> init({
     String? screenId,
@@ -39,6 +40,14 @@ class SocketService {
     disconnect();
 
     try {
+      final authMap = <String, dynamic>{};
+      if (_currentScreenId != null && deviceToken != null) {
+        authMap['screenId'] = _currentScreenId;
+        authMap['deviceToken'] = deviceToken;
+      } else if (pairingCode != null) {
+        authMap['isPairing'] = true;
+      }
+
       _socket = io.io(
         baseUrl,
         io.OptionBuilder()
@@ -47,6 +56,7 @@ class SocketService {
             .enableReconnection()
             .setReconnectionDelay(2000)
             .setReconnectionAttempts(999)
+            .setAuth(authMap)
             .build(),
       );
 
@@ -73,7 +83,8 @@ class SocketService {
 
       // Listen for pairing event if code provided
       if (pairingCode != null && onPaired != null) {
-        _socket!.on('pair:$pairingCode', (data) {
+        _socket!.emit('pairing:join', pairingCode);
+        _socket!.on('paired', (data) {
           if (data is Map<String, dynamic>) {
             onPaired(data);
           }
@@ -150,6 +161,14 @@ class SocketService {
         final Map map = data is Map ? data : {};
         if (map['screenId'] == null || map['screenId'] == _currentScreenId) {
           onUnpaired?.call();
+        }
+      });
+
+      _socket!.on('snapshot:watch', (data) {
+        final Map map = data is Map ? data : {};
+        if (map['screenId'] == null || map['screenId'] == _currentScreenId) {
+          final watching = map['watching'] == true;
+          onSnapshotWatch?.call(watching);
         }
       });
     } catch (_) {}
@@ -231,11 +250,13 @@ class SocketService {
     });
   }
 
-  static void sendSnapshot(String base64Image) {
+  static void sendSnapshot(String base64Image, String source, String currentContent) {
     if (_socket != null && _socket!.connected && _currentScreenId != null) {
       _socket!.emit('screen:snapshot', {
         'screenId': _currentScreenId,
         'image': base64Image,
+        'source': source,
+        'currentContent': currentContent,
       });
     }
   }

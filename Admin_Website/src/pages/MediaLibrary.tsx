@@ -404,7 +404,7 @@ export const MediaLibraryPage: React.FC<MediaLibraryPageProps> = ({
                     className="form-input"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="e.g. Free Cardiology Health Camp Banner"
+                    placeholder="e.g. Free Health Camp Banner"
                     required
                   />
                 </div>

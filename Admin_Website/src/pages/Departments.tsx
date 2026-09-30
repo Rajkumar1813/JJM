@@ -32,21 +32,17 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
   // Form states for Add/Edit
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [floor, setFloor] = useState('1st Floor');
-  const [doctorInCharge, setDoctorInCharge] = useState('');
+  const [floor, setFloor] = useState('');
   const [description, setDescription] = useState('');
-  const [defaultQueueUrl, setDefaultQueueUrl] = useState(
-    'https://hms.jjmhospitalkashipur.com/qd/DOC038'
-  );
+  const [defaultQueueUrl, setDefaultQueueUrl] = useState('');
   const [loading, setLoading] = useState(false);
 
   const openAddModal = () => {
     setName('');
     setCode('');
-    setFloor('1st Floor');
-    setDoctorInCharge('Dr. Abhishek Goel');
+    setFloor('');
     setDescription('');
-    setDefaultQueueUrl('https://hms.jjmhospitalkashipur.com/qd/DOC038');
+    setDefaultQueueUrl('');
     setShowAddModal(true);
   };
 
@@ -55,10 +51,9 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
     setEditingDept(dept);
     setName(dept.name);
     setCode(dept.code);
-    setFloor(dept.floor || '1st Floor');
-    setDoctorInCharge((dept as any).doctorInCharge || 'Dr. Abhishek Goel');
+    setFloor(dept.floor || '');
     setDescription(dept.description || '');
-    setDefaultQueueUrl(dept.defaultQueueUrl || 'https://hms.jjmhospitalkashipur.com/qd/DOC038');
+    setDefaultQueueUrl(dept.defaultQueueUrl || '');
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -75,7 +70,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       setShowAddModal(false);
       onRefresh();
     } catch (err: any) {
-      alert(`Error creating department: ${err.message}`);
+      alert(`Error creating department: ${err.response?.data?.message || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -96,7 +91,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       setEditingDept(null);
       onRefresh();
     } catch (err: any) {
-      alert(`Error updating department: ${err.message}`);
+      alert(`Error updating department: ${err.response?.data?.message || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -109,7 +104,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       await api.delete(`/departments/${id}`);
       onRefresh();
     } catch (err: any) {
-      alert(`Error deleting department: ${err.message}`);
+      alert(`Error deleting department: ${err.response?.data?.message || err.message}`);
     }
   };
 
@@ -141,8 +136,6 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
         }}
       >
         {departments.map((dept) => {
-          const doctorName = (dept as any).doctorInCharge || (dept.code === 'DEP-OPD' ? 'Dr. Sharma (DOC038)' : 'Specialist Consultant');
-
           return (
             <div
               key={dept.id}
@@ -179,7 +172,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                         {dept.name}
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {dept.floor || '1st Floor'} • Code: {dept.code}
+                        {dept.floor || 'N/A'} • Code: {dept.code}
                       </div>
                     </div>
                   </div>
@@ -205,22 +198,22 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <User size={14} color="var(--primary)" />
-                    <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{doctorName}</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Assigned</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
                     <span>Assigned TVs:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--dark)' }}>1 TV Connected</span>
+                    <span style={{ fontWeight: 600, color: 'var(--dark)' }}>{(dept as any).screenCount || 0} Connected</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
                     <span>Queue Status:</span>
-                    <span style={{ fontWeight: 600, color: '#0E805E' }}>Active</span>
+                    <span style={{ fontWeight: 600, color: dept.defaultQueueUrl ? '#0E805E' : 'var(--text-muted)' }}>{dept.defaultQueueUrl ? 'Active' : 'Unset'}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
                     <span>Active Playlist:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--primary)' }}>Hospital Standard</span>
+                    <span style={{ fontWeight: 600, color: 'var(--primary)' }}>{dept.defaultPlaylistId || 'None'}</span>
                   </div>
                 </div>
               </div>
@@ -309,15 +302,15 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Floor Location:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--dark)' }}>{selectedDeptDetail.floor || '1st Floor'}</span>
+                  <span style={{ fontWeight: 600, color: 'var(--dark)' }}>{selectedDeptDetail.floor || 'N/A'}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Specialist Doctor:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--dark)' }}>Dr. Abhishek Goel (DOC038)</span>
+                  <span style={{ fontWeight: 600, color: 'var(--dark)' }}>Assigned</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Assigned Playlist:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--primary)' }}>Neurology Standard Queue</span>
+                  <span style={{ fontWeight: 600, color: 'var(--primary)' }}>{selectedDeptDetail.defaultPlaylistId || 'None'}</span>
                 </div>
               </div>
 
@@ -336,25 +329,35 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                   }}
                 >
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {selectedDeptDetail.defaultQueueUrl}
+                    {selectedDeptDetail.defaultQueueUrl || 'No queue URL configured.'}
                   </span>
-                  <a
-                    href={selectedDeptDetail.defaultQueueUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-outline btn-sm"
-                    style={{ padding: '3px 8px', fontSize: '11px', flexShrink: 0, marginLeft: '8px' }}
-                  >
-                    <span>Visit</span>
-                    <ExternalLink size={11} />
-                  </a>
+                  {selectedDeptDetail.defaultQueueUrl && (
+                    <a
+                      href={selectedDeptDetail.defaultQueueUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-outline btn-sm"
+                      style={{ padding: '3px 8px', fontSize: '11px', flexShrink: 0, marginLeft: '8px' }}
+                    >
+                      <span>Visit</span>
+                      <ExternalLink size={11} />
+                    </a>
+                  )}
                 </div>
               </div>
 
               <div>
                 <label className="form-label">Assigned Screen Displays</label>
                 <div style={{ padding: '10px', backgroundColor: 'var(--bg-main)', borderRadius: 'var(--radius-sm)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  TV screen "SCR-DOC038-TV" (Consultation Room 5) is receiving this department's content and queue feeds.
+                  { (selectedDeptDetail as any).screens?.length > 0 ? (
+                    <ul style={{ margin: 0, paddingLeft: '16px' }}>
+                      {(selectedDeptDetail as any).screens.map((s: any) => (
+                        <li key={s.id}>{s.name} ({s.location})</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    'No screens are currently assigned to this department.'
+                  )}
                 </div>
               </div>
             </div>
@@ -397,7 +400,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                     className="form-input"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. Cardiology OPD"
+                    placeholder="Enter department name"
                     required
                   />
                 </div>
@@ -409,10 +412,11 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                     className="form-input"
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
-                    placeholder="e.g. DEP-CARDIO"
+                    placeholder="Enter unique code"
                     required
                   />
                 </div>
+                
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">Floor Location</label>
@@ -421,7 +425,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                     className="form-input"
                     value={floor}
                     onChange={(e) => setFloor(e.target.value)}
-                    placeholder="e.g. 2nd Floor, Wing B"
+                    placeholder="Enter floor location"
                     required
                   />
                 </div>
@@ -433,8 +437,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
                     className="form-input"
                     value={defaultQueueUrl}
                     onChange={(e) => setDefaultQueueUrl(e.target.value)}
-                    placeholder="https://hms.jjmhospitalkashipur.com/qd/DOC038"
-                    required
+                    placeholder="https://..."
                   />
                 </div>
 
