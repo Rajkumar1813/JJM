@@ -1,0 +1,14 @@
+{
+  "name": "jjm-advertising-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hospital Queue + Digital Signage System (Admin Web, Backend, Flutter TV Player)",
+  "scripts": {
+    "dev": "npm --prefix Admin_Website run dev",
+    "dev:admin": "npm --prefix Admin_Website run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:admin": "npm --prefix Admin_Website run build",
+    "build": "npm --prefix backend run build && npm --prefix Admin_Website run build"
+  }
+}
