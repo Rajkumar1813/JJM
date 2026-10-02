@@ -15,12 +15,12 @@ export class ScreenRepository {
 
   public async getById(id: string): Promise<Screen | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async getByToken(token: string): Promise<Screen | null> {
     const r = await this.col.findOne({ deviceToken: token });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async getByDepartment(departmentId: string): Promise<Screen[]> {

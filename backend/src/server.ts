@@ -2,6 +2,12 @@ import dotenv from 'dotenv';
 dotenv.config();
 import { z } from 'zod';
 import 'express-async-errors';
+import fs from 'fs';
+import crypto from 'crypto';
+import path from 'path';
+
+const pkgStr = fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8');
+const pkgVersion = JSON.parse(pkgStr).version || '2.0.0-PROD';
 
 const envSchema = z.object({
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
@@ -21,7 +27,6 @@ try {
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import cors from 'cors';
-import path from 'path';
 import helmet from 'helmet';
 
 import { healthMonitor } from './services/healthMonitor';
@@ -93,6 +98,14 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+app.use((req, res, next) => {
+  const reqId = req.headers['x-request-id'] || crypto.randomUUID();
+  res.setHeader('x-request-id', reqId);
+  (req as any).id = reqId;
+  Logger.info(`[Req] ${reqId} ${req.method} ${req.url}`);
+  next();
+});
+
 // Init Socket.IO
 initIO(server, isOriginAllowed);
 
@@ -133,7 +146,7 @@ app.get('/api/health', async (req, res) => {
     return res.status(503).json({
       status: 'error',
       db: 'down',
-      version: '2.0.0-PROD',
+      version: pkgVersion,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     });
@@ -142,7 +155,7 @@ app.get('/api/health', async (req, res) => {
   res.json({
     status: 'ok',
     db: dbStatus,
-    version: '2.0.0-PROD',
+    version: pkgVersion,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });

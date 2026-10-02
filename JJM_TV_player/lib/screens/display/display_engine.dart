@@ -69,11 +69,11 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
   late QueueMonitor _queueMonitor;
 
   Timer? _itemTimer;
-  Timer? _snapshotTimer;
+
   Timer? _emergencyAutoDismissTimer;
   Timer? _queuePollTimer;
   int _queueReloadBackoff = 0;
-  bool _snapshotWatchActive = false;
+
 
   final GlobalKey _previewContainerKey = GlobalKey();
   late AnimationController _pulseController;
@@ -111,7 +111,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
   @override
   void dispose() {
     _itemTimer?.cancel();
-    _snapshotTimer?.cancel();
+
     _emergencyAutoDismissTimer?.cancel();
     _queuePollTimer?.cancel();
     _videoController?.dispose();
@@ -375,9 +375,6 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       _applyEmergency(announcement);
     };
 
-    SocketService.onRequestSnapshot = () {
-      _captureAndSendSnapshot();
-    };
 
     SocketService.onUnpaired = () async {
       await StorageService.clearCredentials();
@@ -388,25 +385,7 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       }
     };
 
-    SocketService.onSnapshotWatch = (watching) {
-      if (mounted) {
-        setState(() {
-          _snapshotWatchActive = watching;
-        });
-        _manageSnapshotTimer();
-      }
-    };
-
-    _manageSnapshotTimer();
-  }
-
-  void _manageSnapshotTimer() {
-    _snapshotTimer?.cancel();
-    if (_snapshotWatchActive) {
-      _snapshotTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        _captureAndSendSnapshot();
-      });
-    }
+    // Snapshot timer removed as part of Live Feed cleanup
   }
 
   // ==========================================

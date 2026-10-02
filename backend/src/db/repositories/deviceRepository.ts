@@ -14,12 +14,12 @@ export class DeviceRepository {
 
   public async getById(id: string): Promise<Device | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async getByToken(token: string): Promise<Device | null> {
     const r = await this.col.findOne({ deviceToken: token });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async upsert(device: {

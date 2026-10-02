@@ -36,7 +36,7 @@ export class CommandRepository {
 
   public async getById(id: string): Promise<DeviceCommand | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async getPendingForScreen(screenId: string): Promise<DeviceCommand[]> {

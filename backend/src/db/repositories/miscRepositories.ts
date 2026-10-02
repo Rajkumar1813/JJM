@@ -14,7 +14,7 @@ export class PlaylistRepository {
 
   public async getById(id: string): Promise<Playlist | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async create(p: Omit<Playlist, 'id' | 'createdAt'> & { id?: string }): Promise<Playlist> {

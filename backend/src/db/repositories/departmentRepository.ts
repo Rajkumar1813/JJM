@@ -14,7 +14,7 @@ export class DepartmentRepository {
 
   public async getById(id: string): Promise<Department | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async create(dept: Omit<Department, 'id' | 'createdAt'> & { id?: string }): Promise<Department> {

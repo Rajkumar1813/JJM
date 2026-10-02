@@ -21,6 +21,7 @@ services:
         sync: false
       - key: UPLOAD_DIR
         value: /data/uploads
+    healthCheckPath: /api/health
     disk:
       name: uploads
       mountPath: /data

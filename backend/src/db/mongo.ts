@@ -17,6 +17,13 @@ export const initDbPool = async () => {
   client = new MongoClient(uri, {
     maxPoolSize,
     serverSelectionTimeoutMS: 10000,
+    monitorCommands: true,
+  });
+
+  client.on('commandSucceeded', (event) => {
+    if (event.duration > 100) {
+      Logger.warn(`[Mongo] Slow query (${event.duration}ms): ${event.commandName}`);
+    }
   });
 
   try {

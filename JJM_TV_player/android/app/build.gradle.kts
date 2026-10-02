@@ -58,7 +58,7 @@ android {
             signingConfig = if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
                 releaseSigning
             } else {
-                signingConfigs.getByName("debug")
+                throw GradleException("key.properties is missing or invalid. Release builds must not use the debug keystore.")
             }
         }
     }

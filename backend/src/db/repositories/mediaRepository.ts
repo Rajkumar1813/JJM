@@ -14,7 +14,7 @@ export class MediaRepository {
 
   public async getById(id: string): Promise<MediaItem | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? mapMongoToApi(r) : undefined;
+    return r ? mapMongoToApi(r) : null;
   }
 
   public async create(media: Omit<MediaItem, 'id' | 'createdAt'> & { id?: string }): Promise<MediaItem> {

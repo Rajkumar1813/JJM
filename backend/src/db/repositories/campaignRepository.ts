@@ -15,7 +15,7 @@ export class CampaignRepository {
 
   public async getById(id: string): Promise<Campaign | null> {
     const r = await this.col.findOne({ _id: id as any });
-    return r ? this.mapRow(r) : undefined;
+    return r ? this.mapRow(r) : null;
   }
 
   public async getActiveForScreen(screenId: string, departmentId: string): Promise<Campaign[]> {
