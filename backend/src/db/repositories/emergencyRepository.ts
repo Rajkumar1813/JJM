@@ -1,29 +1,36 @@
-import { query, queryOne, execute } from '../mysql';
 import { EmergencyAnnouncement } from '../../types';
-import { generateId, buildUpdateQuery, formatDateTimeToISO, safeJson } from './repoUtils';
+import { generateId, mapMongoToApi, mapMongoListToApi } from './repoUtils';
+import { getDb } from '../mongo';
 
 export class EmergencyRepository {
+  private get col() {
+    return getDb().collection('emergency_events');
+  }
+
   public async getActive(screenId?: string, departmentId?: string): Promise<EmergencyAnnouncement | null> {
     const now = Date.now();
-    const rows = await query(`
-      SELECT * FROM emergency_events
-      WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > ?)
-      ORDER BY created_at DESC
-    `, [now]);
+    const rows = await this.col.find({
+      isActive: true,
+      $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: now } }]
+    }).sort({ createdAt: -1 }).toArray();
 
     if (rows.length === 0) return null;
 
     for (const r of rows) {
-      const announcement = this.mapRow(r);
+      const announcement = mapMongoToApi(r);
+      // The API return value has a legacy 'active' alias
+      announcement.active = announcement.isActive;
+      announcement.status = announcement.isActive ? 'active' : 'cleared';
+
       if (!screenId && !departmentId) return announcement;
 
-      if (announcement.targetType === 'ALL' || announcement.targetIds.includes('all')) {
+      if (announcement.targetType === 'ALL' || announcement.targetIds?.includes('all')) {
         return announcement;
       }
-      if (announcement.targetType === 'DEPARTMENT' && departmentId && announcement.targetIds.includes(departmentId)) {
+      if (announcement.targetType === 'DEPARTMENT' && departmentId && announcement.targetIds?.includes(departmentId)) {
         return announcement;
       }
-      if (announcement.targetType === 'SCREEN' && screenId && announcement.targetIds.includes(screenId)) {
+      if (announcement.targetType === 'SCREEN' && screenId && announcement.targetIds?.includes(screenId)) {
         return announcement;
       }
     }
@@ -32,8 +39,13 @@ export class EmergencyRepository {
   }
 
   public async getAll(): Promise<EmergencyAnnouncement[]> {
-    const rows = await query('SELECT * FROM emergency_events ORDER BY created_at DESC');
-    return rows.map(r => this.mapRow(r));
+    const rows = await this.col.find({}).sort({ createdAt: -1 }).toArray();
+    return rows.map(r => {
+      const a = mapMongoToApi(r);
+      a.active = a.isActive;
+      a.status = a.isActive ? 'active' : 'cleared';
+      return a;
+    });
   }
 
   public async create(emergency: {
@@ -53,59 +65,46 @@ export class EmergencyRepository {
       ? Date.now() + (emergency.durationSeconds * 1000)
       : null;
 
-    await execute(`
-      INSERT INTO emergency_events (
-        id, title, message, severity, display_mode, target_type, target_ids,
-        highlight_screen, is_active, duration_seconds, expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `, [
-      id,
-      emergency.title,
-      emergency.message,
-      emergency.severity || 'critical',
-      emergency.displayMode || 'takeover',
-      emergency.targetType || 'ALL',
-      JSON.stringify(emergency.targetIds || ['all']),
-      emergency.highlightScreen !== false ? 1 : 0,
-      emergency.durationSeconds || null,
-      expiresAt,
-      now
-    ]);
+    const newDoc = {
+      _id: id,
+      title: emergency.title,
+      message: emergency.message,
+      severity: emergency.severity || 'critical',
+      displayMode: emergency.displayMode || 'takeover',
+      targetType: emergency.targetType || 'ALL',
+      targetIds: emergency.targetIds || ['all'],
+      highlightScreen: emergency.highlightScreen !== false,
+      isActive: true,
+      durationSeconds: emergency.durationSeconds || null,
+      expiresAt: expiresAt,
+      createdAt: now
+    };
 
-    const r = await queryOne('SELECT * FROM emergency_events WHERE id = ?', [id]);
-    return this.mapRow(r);
+    await this.col.insertOne(newDoc as any);
+    
+    const r = await this.col.findOne({ _id: id as any });
+    const a = mapMongoToApi(r);
+    a.active = a.isActive;
+    a.status = a.isActive ? 'active' : 'cleared';
+    return a;
   }
 
   public async clearActive(): Promise<boolean> {
     const now = new Date();
-    const res = await execute("UPDATE emergency_events SET is_active = 0, cleared_at = ? WHERE is_active = 1", [now]);
-    return res.affectedRows > 0;
+    const res = await this.col.updateMany(
+      { isActive: true },
+      { $set: { isActive: false, clearedAt: now } }
+    );
+    return res.modifiedCount > 0;
   }
 
   public async clearById(id: string): Promise<boolean> {
     const now = new Date();
-    const res = await execute("UPDATE emergency_events SET is_active = 0, cleared_at = ? WHERE id = ?", [now, id]);
-    return res.affectedRows > 0;
-  }
-
-  private mapRow(r: any): EmergencyAnnouncement {
-    return {
-      id: r.id,
-      title: r.title,
-      message: r.message,
-      severity: r.severity as 'critical' | 'warning' | 'info',
-      displayMode: r.display_mode as 'takeover' | 'banner' | 'both',
-      targetType: (r.target_type || 'ALL') as 'ALL' | 'DEPARTMENT' | 'SCREEN',
-      targetIds: safeJson(r.target_ids, ['all']),
-      highlightScreen: r.highlight_screen === 1,
-      active: r.is_active === 1,
-      isActive: r.is_active === 1,
-      status: r.is_active === 1 ? 'active' : 'cleared',
-      durationSeconds: r.duration_seconds || undefined,
-      expiresAt: r.expires_at || undefined,
-      createdAt: formatDateTimeToISO(r.created_at)!,
-      clearedAt: formatDateTimeToISO(r.cleared_at) || null,
-    };
+    const res = await this.col.updateOne(
+      { _id: id as any, isActive: true },
+      { $set: { isActive: false, clearedAt: now } }
+    );
+    return res.modifiedCount > 0;
   }
 }
 

@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, getBackendBaseUrl } from '../services/api';
-import { io } from 'socket.io-client';
+import axios from 'axios';
+import { getBackendBaseUrl } from '../services/api';
 import { AlertTriangle, Activity, Wifi, WifiOff } from 'lucide-react';
 
 interface PublicDisplayViewProps {
   screenId: string;
 }
+
+const bareAxios = axios.create({
+  baseURL: getBackendBaseUrl() + '/api',
+});
 
 export const PublicDisplayView: React.FC<PublicDisplayViewProps> = ({ screenId }) => {
   const [config, setConfig] = useState<any>(null);
@@ -16,29 +20,29 @@ export const PublicDisplayView: React.FC<PublicDisplayViewProps> = ({ screenId }
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
 
-  const socketRef = useRef<any>(null);
   const cycleTimerRef = useRef<any>(null);
 
   // Fetch initial configuration
   const fetchConfig = async () => {
     try {
-      const res = await api.get(`/display/${screenId}/config`);
+      const params = new URLSearchParams(window.location.search);
+      const key = params.get('key');
+      const res = await bareAxios.get(`/public-display/${screenId}/config?key=${key || ''}`);
       if (res.data.success && res.data.config) {
         setConfig(res.data.config);
+        setActiveEmergency(res.data.activeEmergency || null);
         setError(null);
+        setIsConnected(true);
       } else {
         setError(res.data.message || 'Screen configuration not found');
       }
-
-      // Check emergency
-      const emergRes = await api.get('/emergency');
-      if (emergRes.data.success && emergRes.data.announcement?.isActive) {
-        setActiveEmergency(emergRes.data.announcement);
-      } else {
-        setActiveEmergency(null);
-      }
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to connect to hospital display server');
+      if (err.response?.status === 401) {
+         setError('Access Denied: Invalid display key.');
+      } else {
+         setError(err.response?.data?.message || 'Failed to connect to hospital display server');
+      }
+      setIsConnected(false);
     } finally {
       setLoading(false);
     }
@@ -46,62 +50,8 @@ export const PublicDisplayView: React.FC<PublicDisplayViewProps> = ({ screenId }
 
   useEffect(() => {
     fetchConfig();
-
-    // Connect to WebSocket
-    const socket = io(getBackendBaseUrl(), {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 15,
-      reconnectionDelay: 1000,
-    });
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      setIsConnected(true);
-      // Register screen room
-      socket.emit('screen:register', {
-        screenId,
-        appVersion: '2.0.0-WebPlayer',
-        configVersion: config?.configVersion || 1,
-      });
-    });
-
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
-
-    socket.on('config:update', (data: any) => {
-      if (data?.config) {
-        setConfig(data.config);
-      } else {
-        fetchConfig();
-      }
-    });
-
-    socket.on('emergency:update', (data: any) => {
-      setActiveEmergency(data?.announcement || null);
-    });
-
-    socket.on('emergency:dismiss', () => {
-      setActiveEmergency(null);
-    });
-
-    // Send periodic heartbeats
-    const heartbeatTimer = setInterval(() => {
-      if (socket.connected) {
-        socket.emit('screen:heartbeat', {
-          screenId,
-          currentContent: currentMode,
-          playerVersion: '2.0.0-WebPlayer',
-          appliedConfigVersion: config?.configVersion || 1,
-          queueConnected: true,
-        });
-      }
-    }, 10000);
-
-    return () => {
-      clearInterval(heartbeatTimer);
-      socket.disconnect();
-    };
+    const timer = setInterval(fetchConfig, 10000);
+    return () => clearInterval(timer);
   }, [screenId]);
 
   // Playlist / Rotation Engine

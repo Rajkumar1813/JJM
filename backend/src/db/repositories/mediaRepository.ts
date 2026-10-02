@@ -1,78 +1,100 @@
-import { query, queryOne, execute, withTransaction } from '../mysql';
 import { MediaItem } from '../../types';
-import { generateId, buildUpdateQuery, formatDateTimeToISO, safeJson } from './repoUtils';
+import { generateId, mapMongoToApi, mapMongoListToApi } from './repoUtils';
+import { getDb, withTransaction } from '../mongo';
 
 export class MediaRepository {
-  public async getAll(): Promise<MediaItem[]> {
-    const rows = await query('SELECT * FROM media ORDER BY created_at DESC');
-    return rows.map(r => this.mapRow(r));
+  private get col() {
+    return getDb().collection('media');
   }
 
-  public async getById(id: string): Promise<MediaItem | undefined> {
-    const r = await queryOne('SELECT * FROM media WHERE id = ?', [id]);
-    return r ? this.mapRow(r) : undefined;
+  public async getAll(): Promise<MediaItem[]> {
+    const rows = await this.col.find({}).sort({ createdAt: -1 }).toArray();
+    return mapMongoListToApi(rows);
+  }
+
+  public async getById(id: string): Promise<MediaItem | null> {
+    const r = await this.col.findOne({ _id: id as any });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
   public async create(media: Omit<MediaItem, 'id' | 'createdAt'> & { id?: string }): Promise<MediaItem> {
     const id = media.id || generateId('MED');
     const createdAt = new Date();
 
-    await withTransaction(async (conn) => {
-      await conn.execute(`
-        INSERT INTO media (
-          id, title, type, url, sha256_hash, file_size, duration, dimensions, tags, category, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        id,
-        media.title,
-        media.type,
-        media.url,
-        media.sha256Hash || 'legacy_unhashed',
-        media.fileSize || 0,
-        media.duration || 15,
-        media.dimensions || null,
-        JSON.stringify(media.tags || []),
-        media.category || 'General',
-        createdAt
-      ]);
+    const newMedia = {
+      _id: id,
+      title: media.title,
+      type: media.type,
+      url: media.url,
+      sha256Hash: media.sha256Hash || 'legacy_unhashed',
+      fileSize: media.fileSize || 0,
+      duration: media.duration || 15,
+      dimensions: media.dimensions || null,
+      tags: media.tags || [],
+      category: media.category || 'General',
+      createdAt,
+    };
 
-      await conn.execute("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'", [createdAt]);
+    await withTransaction(async (session) => {
+      await this.col.insertOne(newMedia as any, { session });
+      await getDb().collection('system_versions').updateOne(
+        { _id: 'MEDIA_MANIFEST' as any },
+        { $inc: { versionNumber: 1 }, $set: { updatedAt: new Date() } },
+        { session }
+      );
     });
 
     return (await this.getById(id))!;
   }
 
-  public async delete(id: string): Promise<boolean> {
-    let affected = 0;
-    await withTransaction(async (conn) => {
-      const [res] = await conn.execute<any>('DELETE FROM media WHERE id = ?', [id]);
-      if (res.affectedRows > 0) {
-        affected = res.affectedRows;
-        await conn.execute("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'MEDIA_MANIFEST'", [new Date()]);
+  public async delete(id: string, force: boolean = false): Promise<{ success: boolean, usage?: { campaigns: string[], playlists: string[] } }> {
+    return await withTransaction(async (session) => {
+      const campaigns = await getDb().collection('campaigns').find({ mediaId: id }, { session }).toArray();
+      const playlists = await getDb().collection('playlists').find({ 'items.mediaId': id }, { session }).toArray();
+
+      if (!force && (campaigns.length > 0 || playlists.length > 0)) {
+        return {
+          success: false,
+          usage: {
+            campaigns: campaigns.map(c => c._id as unknown as string),
+            playlists: playlists.map(p => p._id as unknown as string)
+          }
+        };
       }
+
+      if (force) {
+        if (campaigns.length > 0) {
+          await getDb().collection('campaigns').updateMany(
+            { mediaId: id },
+            { $set: { mediaId: null, mediaUrl: null } },
+            { session }
+          );
+        }
+        if (playlists.length > 0) {
+          await getDb().collection('playlists').updateMany(
+            { 'items.mediaId': id },
+            { $pull: { items: { mediaId: id } } as any },
+            { session }
+          );
+        }
+      }
+
+      const res = await this.col.deleteOne({ _id: id as any }, { session });
+      if (res.deletedCount > 0) {
+        await getDb().collection('system_versions').updateOne(
+          { _id: 'MEDIA_MANIFEST' as any },
+          { $inc: { versionNumber: 1 }, $set: { updatedAt: new Date() } },
+          { session }
+        );
+        return { success: true };
+      }
+      return { success: false };
     });
-    return affected > 0;
   }
 
   public async getManifestVersion(): Promise<number> {
-    const r = await queryOne<any>("SELECT version_number FROM system_versions WHERE id = 'MEDIA_MANIFEST'");
-    return r ? r.version_number : 1;
-  }
-
-  private mapRow(r: any): MediaItem {
-    return {
-      id: r.id,
-      title: r.title,
-      type: r.type as 'image' | 'video' | 'announcement',
-      url: r.url,
-      sha256Hash: r.sha256_hash,
-      fileSize: r.file_size,
-      duration: r.duration,
-      dimensions: r.dimensions || undefined,
-      tags: safeJson(r.tags, []),
-      category: r.category,
-      createdAt: formatDateTimeToISO(r.created_at)!,
-    };
+    const r = await getDb().collection('system_versions').findOne({ _id: 'MEDIA_MANIFEST' as any });
+    return r ? (r.versionNumber as number) : 1;
   }
 }
 

@@ -59,7 +59,7 @@ class ApiService {
 
   static Future<bool> _testHealth(String base) async {
     try {
-      final res = await http.get(Uri.parse('$base/api/health')).timeout(const Duration(milliseconds: 1800));
+      final res = await http.get(Uri.parse('$base/api/health')).timeout(const Duration(seconds: 8));
       return res.statusCode == 200;
     } catch (_) {
       return false;
@@ -96,7 +96,7 @@ class ApiService {
 
     for (final baseUrl in candidates) {
       try {
-        final url = Uri.parse('$baseUrl/api/screens/pair-session');
+        final url = Uri.parse('$baseUrl/api/pairing/session');
         final res = await http.post(
           url,
           headers: {'Content-Type': 'application/json'},
@@ -104,7 +104,7 @@ class ApiService {
             'socketId': socketId,
             'deviceMetadata': metadata ?? {'platform': 'Android TV', 'version': AppConfig.appVersion},
           }),
-        ).timeout(const Duration(seconds: 3));
+        ).timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
@@ -116,6 +116,27 @@ class ApiService {
         }
       } catch (_) {}
     }
+    return null;
+  }
+
+  static Future<Map<String, dynamic>?> checkPairingSession(String code, String secret) async {
+    try {
+      final baseUrl = await getBaseUrl();
+      final url = Uri.parse('$baseUrl/api/pairing/session/$code?secret=$secret');
+      final res = await http.get(url).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['success'] == true) {
+          if (data['status'] == 'paired' && data['config'] != null) {
+            final config = ResolvedConfig.fromJson(data['config']);
+            await StorageService.saveCachedConfig(config);
+            data['config'] = config; // replace raw JSON with parsed config for consumers if they want it
+          }
+          return data;
+        }
+      }
+    } catch (_) {}
     return null;
   }
 
@@ -189,7 +210,7 @@ class ApiService {
   }) async {
     try {
       final baseUrl = await getBaseUrl();
-      final url = Uri.parse('$baseUrl/api/screens/$screenId/commands/$commandId/ack');
+      final url = Uri.parse('$baseUrl/api/display/$screenId/commands/$commandId/ack');
       final res = await http.post(
         url,
         headers: await _getHeaders(),
@@ -208,7 +229,7 @@ class ApiService {
   }) async {
     try {
       final baseUrl = await getBaseUrl();
-      final url = Uri.parse('$baseUrl/api/screens/$screenId/commands/$commandId/fail');
+      final url = Uri.parse('$baseUrl/api/display/$screenId/commands/$commandId/fail');
       final res = await http.post(
         url,
         headers: await _getHeaders(),
@@ -227,6 +248,7 @@ class ApiService {
     int? mediaManifestVersion,
     bool? queueConnected,
     String? queueLastUpdateAt,
+    bool? hasMediaError,
   }) async {
     try {
       final baseUrl = await getBaseUrl();
@@ -241,6 +263,7 @@ class ApiService {
           'mediaManifestVersion': mediaManifestVersion,
           'queueConnected': queueConnected,
           'queueLastUpdateAt': queueLastUpdateAt,
+          'hasMediaError': hasMediaError,
         }),
       ).timeout(const Duration(seconds: 5));
       _checkAuth(res);

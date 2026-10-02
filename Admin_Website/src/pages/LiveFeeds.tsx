@@ -84,6 +84,8 @@ export const LiveFeeds: React.FC<LiveFeedsProps> = ({
           </h1>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>
             Multi-screen visual matrix monitoring active OPD queue displays and promotional broadcasts in real time.
+            <br />
+            <strong>Note:</strong> Snapshots only capture ads and emergencies, not the native Android queue view.
           </p>
         </div>
 

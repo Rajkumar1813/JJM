@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import { X, Tv, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Department } from '../types';
@@ -38,8 +39,8 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
       const res = await api.post('/screens/pair-claim', {
         pairingCode: pairingCode.trim(),
         name: screenName.trim(),
-        departmentId: departmentId || (departments[0]?.id || 'DEP-OPD'),
-        location: location.trim() || 'Hospital OPD Clinic',
+        departmentId: departmentId || departments[0]?.id,
+        location: location.trim(),
         queueUrl: queueUrl.trim(),
       });
 
@@ -53,7 +54,7 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
         }, 1500);
       }
     } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to pair TV');
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -99,6 +100,18 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
           </button>
         </div>
 
+        {departments.length === 0 ? (
+          <div className="modal-body" style={{ textAlign: 'center', padding: '40px 20px' }}>
+            <AlertCircle size={48} color="#EF5A7C" style={{ margin: '0 auto 16px' }} />
+            <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--dark)' }}>No Departments Found</h4>
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px' }}>
+              You must create at least one department in the Departments tab before you can pair a screen.
+            </p>
+            <button className="btn btn-primary" onClick={onClose} style={{ marginTop: '20px' }}>
+              Close
+            </button>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit}>
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {/* 6-Digit Pairing Code */}
@@ -246,6 +259,7 @@ export const PairScreenModal: React.FC<PairScreenModalProps> = ({
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

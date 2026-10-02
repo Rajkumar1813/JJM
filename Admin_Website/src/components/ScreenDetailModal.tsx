@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState, useEffect } from 'react';
 import {
   X,
@@ -128,7 +129,7 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
         setFeedback(`Command "${type}" dispatched with ID: ${res.data.command.id}`);
       }
     } catch (err: any) {
-      setFeedback(`Dispatch error: ${err.message}`);
+      setFeedback(`Dispatch error: ${getErrorMessage(err)}`);
     } finally {
       setIsExecutingCommand(null);
     }
@@ -150,7 +151,7 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
       setFeedback('Screen settings successfully updated.');
       onRefreshList();
     } catch (err: any) {
-      setFeedback(`Update failed: ${err.message}`);
+      setFeedback(`Update failed: ${getErrorMessage(err)}`);
     } finally {
       setIsUpdating(false);
     }
@@ -251,7 +252,7 @@ export const ScreenDetailModal: React.FC<ScreenDetailModalProps> = ({
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <a
-                      href={`/display/${screen.id}`}
+                      href={`/display/${screen.id}?key=${screen.displayKey || ''}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ color: '#EF5A7C', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}

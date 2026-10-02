@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   Building2,
@@ -70,7 +71,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       setShowAddModal(false);
       onRefresh();
     } catch (err: any) {
-      alert(`Error creating department: ${err.response?.data?.message || err.message}`);
+      alert(`Error creating department: ${getErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -91,7 +92,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       setEditingDept(null);
       onRefresh();
     } catch (err: any) {
-      alert(`Error updating department: ${err.response?.data?.message || err.message}`);
+      alert(`Error updating department: ${getErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -104,7 +105,7 @@ export const DepartmentsPage: React.FC<DepartmentsPageProps> = ({
       await api.delete(`/departments/${id}`);
       onRefresh();
     } catch (err: any) {
-      alert(`Error deleting department: ${err.response?.data?.message || err.message}`);
+      alert(`Error deleting department: ${getErrorMessage(err)}`);
     }
   };
 

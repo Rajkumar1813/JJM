@@ -1,124 +1,130 @@
-import { query, queryOne, execute } from '../mysql';
 import { Playlist, PairingSession, AuditLog } from '../../types';
-import { generateId, buildUpdateQuery, formatDateTimeToISO, safeJson } from './repoUtils';
+import { generateId, buildMongoUpdate, formatDateTimeToISO, mapMongoToApi, mapMongoListToApi } from './repoUtils';
+import { getDb } from '../mongo';
 
 export class PlaylistRepository {
-  public async getAll(): Promise<Playlist[]> {
-    const rows = await query('SELECT * FROM playlists ORDER BY name ASC');
-    return rows.map(r => this.mapRow(r));
+  private get col() {
+    return getDb().collection('playlists');
   }
 
-  public async getById(id: string): Promise<Playlist | undefined> {
-    const r = await queryOne('SELECT * FROM playlists WHERE id = ?', [id]);
-    return r ? this.mapRow(r) : undefined;
+  public async getAll(): Promise<Playlist[]> {
+    const rows = await this.col.find({}).sort({ name: 1 }).toArray();
+    return mapMongoListToApi(rows);
+  }
+
+  public async getById(id: string): Promise<Playlist | null> {
+    const r = await this.col.findOne({ _id: id as any });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
   public async create(p: Omit<Playlist, 'id' | 'createdAt'> & { id?: string }): Promise<Playlist> {
     const id = p.id || generateId('PL');
     const createdAt = new Date();
 
-    await execute(`
-      INSERT INTO playlists (id, name, description, items, is_default, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [
-      id,
-      p.name,
-      p.description || '',
-      JSON.stringify(p.items || []),
-      p.isDefault ? 1 : 0,
-      createdAt
-    ]);
+    const newPlaylist = {
+      _id: id,
+      name: p.name,
+      description: p.description || '',
+      items: p.items || [],
+      isDefault: !!p.isDefault,
+      createdAt,
+    };
 
+    await this.col.insertOne(newPlaylist as any);
     return (await this.getById(id))!;
   }
 
   public async update(id: string, updates: Partial<Playlist>): Promise<Playlist | null> {
-    const dbUpdates: Record<string, any> = {};
-    if (updates.name !== undefined) dbUpdates.name = updates.name;
-    if (updates.description !== undefined) dbUpdates.description = updates.description;
-    if (updates.items !== undefined) dbUpdates.items = JSON.stringify(updates.items);
-    if (updates.isDefault !== undefined) dbUpdates.is_default = updates.isDefault ? 1 : 0;
+    const dbUpdates = buildMongoUpdate({
+      name: updates.name,
+      description: updates.description,
+      items: updates.items,
+      isDefault: updates.isDefault !== undefined ? !!updates.isDefault : undefined,
+    });
 
-    const q = buildUpdateQuery('playlists', id, dbUpdates);
-    if (q) {
-      await execute(q.sql, q.values);
+    if (dbUpdates) {
+      await this.col.updateOne({ _id: id as any }, dbUpdates);
     }
     return await this.getById(id) || null;
   }
 
   public async delete(id: string): Promise<boolean> {
-    const res = await execute('DELETE FROM playlists WHERE id = ?', [id]);
-    return res.affectedRows > 0;
-  }
-
-  private mapRow(r: any): Playlist {
-    return {
-      id: r.id,
-      name: r.name,
-      description: r.description || '',
-      items: safeJson(r.items, []),
-      isDefault: r.is_default === 1,
-      createdAt: formatDateTimeToISO(r.created_at)!,
-    };
+    const res = await this.col.deleteOne({ _id: id as any });
+    return res.deletedCount > 0;
   }
 }
 
 export class PairingRepository {
-  public async get(code: string): Promise<PairingSession | undefined> {
-    const r = await queryOne<any>('SELECT * FROM pairing_sessions WHERE pairing_code = ?', [code]);
-    if (!r) return undefined;
+  private get col() {
+    return getDb().collection('pairing_sessions');
+  }
+
+  public async get(code: string): Promise<PairingSession | null> {
+    const r = await this.col.findOne({ pairingCode: code });
+    if (!r) return null;
     return {
-      pairingCode: r.pairing_code,
-      socketId: r.socket_id || undefined,
-      deviceMetadata: safeJson(r.device_metadata, undefined),
-      screenId: r.screen_id || undefined,
-      deviceToken: r.device_token || undefined,
+      pairingCode: r.pairingCode,
+      socketId: r.socketId || undefined,
+      deviceMetadata: r.deviceMetadata,
+      screenId: r.screenId || undefined,
+      deviceToken: r.deviceToken || undefined,
       status: r.status as any,
-      expiresAt: r.expires_at,
-      createdAt: formatDateTimeToISO(r.created_at)!,
+      expiresAt: r.expiresAt,
+      createdAt: formatDateTimeToISO(r.createdAt)!,
     };
   }
 
   public async save(session: PairingSession): Promise<void> {
     const now = new Date();
-    await execute(`
-      INSERT INTO pairing_sessions (pairing_code, socket_id, device_metadata, screen_id, device_token, status, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE 
-        socket_id = VALUES(socket_id),
-        device_metadata = VALUES(device_metadata),
-        screen_id = VALUES(screen_id),
-        device_token = VALUES(device_token),
-        status = VALUES(status),
-        expires_at = VALUES(expires_at)
-    `, [
-      session.pairingCode,
-      session.socketId || null,
-      session.deviceMetadata ? JSON.stringify(session.deviceMetadata) : null,
-      session.screenId || null,
-      session.deviceToken || null,
-      session.status,
-      session.expiresAt,
-      now
-    ]);
+    // In Mongo migration, we set expiresAtDate for the TTL index.
+    const expiresAtDate = new Date(session.expiresAt);
+
+    await this.col.findOneAndUpdate(
+      { pairingCode: session.pairingCode },
+      {
+        $set: {
+          socketId: session.socketId || null,
+          deviceMetadata: session.deviceMetadata || null,
+          screenId: session.screenId || null,
+          deviceToken: session.deviceToken || null,
+          status: session.status,
+          expiresAt: session.expiresAt,
+          expiresAtDate: expiresAtDate,
+        },
+        $setOnInsert: { createdAt: now }
+      },
+      { upsert: true }
+    );
   }
 
   public async delete(code: string): Promise<void> {
-    await execute('DELETE FROM pairing_sessions WHERE pairing_code = ?', [code]);
+    await this.col.deleteOne({ pairingCode: code });
   }
 }
 
 export class AuditRepository {
+  private get col() {
+    return getDb().collection('audit_logs');
+  }
+
   public async log(action: string, entity: string, entityId: string, details: string | any, userId?: string, ip?: string): Promise<AuditLog> {
     const id = generateId('AUD');
     const timestamp = new Date();
 
-    await execute(`
-      INSERT INTO audit_logs (id, action, entity, entity_id, details, timestamp, user_id, ip)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, action, entity, entityId, JSON.stringify(details), timestamp, userId || null, ip || null]);
+    const doc = {
+      _id: id,
+      action,
+      entity,
+      entityId,
+      details: typeof details === 'string' ? details : JSON.stringify(details),
+      timestamp,
+      userId: userId || null,
+      ip: ip || null
+    };
 
-    return { id, action, entity, entityId, details: typeof details === 'string' ? details : JSON.stringify(details), timestamp: formatDateTimeToISO(timestamp)!, userId };
+    await this.col.insertOne(doc as any);
+
+    return { id, action, entity, entityId, details: doc.details, timestamp: formatDateTimeToISO(timestamp)!, userId };
   }
 
   public async getAll(filters: {
@@ -131,53 +137,42 @@ export class AuditRepository {
     to?: string;
     search?: string;
   } = {}): Promise<{ data: AuditLog[], total: number }> {
-    const conditions: string[] = ['1=1'];
-    const values: any[] = [];
+    const query: Record<string, any> = {};
 
-    if (filters.action) {
-      conditions.push('action = ?');
-      values.push(filters.action);
+    if (filters.action) query.action = filters.action;
+    if (filters.userId) query.userId = filters.userId;
+    if (filters.entity) query.entity = filters.entity;
+    
+    if (filters.from || filters.to) {
+      query.timestamp = {};
+      if (filters.from) query.timestamp.$gte = new Date(filters.from);
+      if (filters.to) query.timestamp.$lte = new Date(filters.to);
     }
-    if (filters.userId) {
-      conditions.push('user_id = ?');
-      values.push(filters.userId);
-    }
-    if (filters.entity) {
-      conditions.push('entity = ?');
-      values.push(filters.entity);
-    }
-    if (filters.from) {
-      conditions.push('timestamp >= ?');
-      values.push(new Date(filters.from));
-    }
-    if (filters.to) {
-      conditions.push('timestamp <= ?');
-      values.push(new Date(filters.to));
-    }
+    
     if (filters.search) {
-      conditions.push('(action LIKE ? OR entity LIKE ? OR entity_id LIKE ? OR details LIKE ?)');
-      const searchStr = `%${filters.search}%`;
-      values.push(searchStr, searchStr, searchStr, searchStr);
+      const searchRegex = new RegExp(filters.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query.$or = [
+        { action: searchRegex },
+        { entity: searchRegex },
+        { entityId: searchRegex },
+        { details: searchRegex },
+      ];
     }
 
-    const whereClause = conditions.join(' AND ');
-    const countRow = await queryOne<any>(`SELECT COUNT(*) as total FROM audit_logs WHERE ${whereClause}`, values);
-    const total = countRow?.total || 0;
-
+    const total = await this.col.countDocuments(query);
     const limit = filters.limit || 100;
     const offset = filters.offset || 0;
-    values.push(limit, offset);
 
-    const rows = await query<any[]>(`SELECT * FROM audit_logs WHERE ${whereClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`, values);
+    const rows = await this.col.find(query).sort({ timestamp: -1 }).skip(offset).limit(limit).toArray();
     
     const data = rows.map(r => ({
-      id: r.id,
+      id: r._id.toString(),
       action: r.action,
       entity: r.entity,
-      entityId: r.entity_id,
-      details: safeJson(r.details, ''),
+      entityId: r.entityId,
+      details: r.details,
       timestamp: formatDateTimeToISO(r.timestamp)!,
-      userId: r.user_id || undefined,
+      userId: r.userId || undefined,
       ip: r.ip || undefined,
     }));
 
@@ -186,15 +181,22 @@ export class AuditRepository {
 }
 
 export class SystemRepository {
+  private get col() {
+    return getDb().collection('system_versions');
+  }
+
   public async getGlobalConfigVersion(): Promise<number> {
-    const r = await queryOne<any>("SELECT version_number FROM system_versions WHERE id = 'GLOBAL_CONFIG'");
-    return r ? r.version_number : 1;
+    const r = await this.col.findOne({ _id: 'GLOBAL_CONFIG' as any });
+    return r ? (r.versionNumber as number) : 1;
   }
 
   public async incrementGlobalConfigVersion(): Promise<number> {
-    const now = new Date();
-    await execute("UPDATE system_versions SET version_number = version_number + 1, updated_at = ? WHERE id = 'GLOBAL_CONFIG'", [now]);
-    return await this.getGlobalConfigVersion();
+    const r = await this.col.findOneAndUpdate(
+      { _id: 'GLOBAL_CONFIG' as any },
+      { $inc: { versionNumber: 1 }, $set: { updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+    return r ? (r.versionNumber as number) : 1;
   }
 }
 

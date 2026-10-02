@@ -103,6 +103,7 @@ export interface PairingSession {
   deviceToken?: string;
   deviceMetadata?: Record<string, any>;
   createdAt?: string;
+  pollSecret?: string;
 }
 
 export interface MediaItem {
@@ -124,6 +125,8 @@ export interface PlaylistItem {
   type: 'queue' | 'image' | 'video' | 'announcement';
   mediaId?: string;
   mediaUrl?: string;
+  sha256Hash?: string;
+  fileSize?: number;
   title: string;
   duration: number; // in seconds
   order: number;
@@ -236,6 +239,9 @@ export interface ResolvedDisplayConfig {
     isPaused?: boolean;
     powerState?: 'on' | 'off';
     emergencyAnnouncement?: EmergencyAnnouncement | null;
+    kioskLock?: boolean;
+    soundAlerts?: boolean;
+    kioskPinHash?: string;
   };
 }
 

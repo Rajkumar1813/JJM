@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   Tv,
@@ -121,7 +122,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       setEditingScreen(null);
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to save screen settings: ${err.message}`);
+      alert(`Failed to save screen settings: ${getErrorMessage(err)}`);
     } finally {
       setEditSaving(false);
     }
@@ -133,7 +134,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       await api.post(`/screens/${screenId}/toggle-pause`);
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to toggle screen playback: ${err.message}`);
+      alert(`Failed to toggle screen playback: ${getErrorMessage(err)}`);
     }
   };
 
@@ -144,7 +145,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       await api.post(`/screens/${screen.id}/power`, { state: nextState });
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to change power state: ${err.message}`);
+      alert(`Failed to change power state: ${getErrorMessage(err)}`);
     }
   };
 
@@ -159,7 +160,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       alert('Restart command dispatched to TV.');
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to restart: ${err.message}`);
+      alert(`Failed to restart: ${getErrorMessage(err)}`);
     }
   };
 
@@ -177,7 +178,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       alert('Test alert dispatched to screen.');
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to test: ${err.message}`);
+      alert(`Failed to test: ${getErrorMessage(err)}`);
     }
   };
 
@@ -194,7 +195,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
       await api.post(`/screens/${screen.id}/unpair`);
       onRefreshScreens();
     } catch (err: any) {
-      alert(`Failed to unpair: ${err.message}`);
+      alert(`Failed to unpair: ${getErrorMessage(err)}`);
     }
   };
 
@@ -691,7 +692,7 @@ export const ScreensPage: React.FC<ScreensPageProps> = ({
                     className="form-input"
                     value={editQueueUrl}
                     onChange={(e) => setEditQueueUrl(e.target.value)}
-                    placeholder="https://hms.jjmhospitalkashipur.com/qd/123"
+                    placeholder="https://example.invalid/qd/123"
                     required
                   />
                 </div>

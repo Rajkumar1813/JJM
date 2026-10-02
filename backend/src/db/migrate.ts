@@ -1,92 +1,95 @@
 import fs from 'fs';
 import path from 'path';
-import { execute, query, pool } from './mysql';
+import { getDb } from './mongo';
 import { Logger } from '../services/logger';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
 export async function runMigrations() {
-  const connection = await pool.getConnection();
+  const db = getDb();
   try {
     Logger.info('[Migrations] Starting database migration check...');
-    // Advisory lock to prevent multiple instances migrating at once
-    const lockName = 'jjm_migration_lock';
-    const [[lockResult]] = await connection.query<any>('SELECT GET_LOCK(?, 10) AS lock_status', [lockName]);
-    if (lockResult.lock_status !== 1) {
+    
+    // Acquire distributed lock
+    const lockName = 'schema_migration_lock';
+    const now = Date.now();
+    const ttl = 30000; // 30 seconds
+    const instanceId = crypto.randomUUID();
+
+    const lockCol = db.collection('job_locks');
+    const lockResult = await lockCol.findOneAndUpdate(
+      { _id: lockName as any, $or: [{ lockedUntil: { $lt: now } }, { lockedUntil: { $exists: false } }] },
+      { $set: { lockedUntil: now + ttl, owner: instanceId } },
+      { upsert: true, returnDocument: 'after' }
+    ).catch(async (e) => {
+      if (e.code === 11000) {
+        // Someone else just created it
+        return null;
+      }
+      throw e;
+    });
+
+    if (!lockResult || lockResult.owner !== instanceId) {
       Logger.warn('[Migrations] Could not acquire migration lock. Another instance might be migrating.');
       return;
     }
 
     try {
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-          version VARCHAR(255) PRIMARY KEY,
-          applied_at DATETIME(3) NOT NULL,
-          checksum VARCHAR(255)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-
       const migrationsDir = path.join(__dirname, 'migrations');
       if (!fs.existsSync(migrationsDir)) {
         fs.mkdirSync(migrationsDir, { recursive: true });
       }
 
-      const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+      const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.ts') || f.endsWith('.js')).sort();
+      const schemaMigrations = db.collection('schema_migrations');
+      
       for (const file of files) {
         const filePath = path.join(migrationsDir, file);
-        const sql = fs.readFileSync(filePath, 'utf-8');
-        const checksum = crypto.createHash('sha256').update(sql).digest('hex');
+        const migration = await import(filePath);
 
-        const [rows] = await connection.query<any>('SELECT * FROM schema_migrations WHERE version = ?', [file]);
-        if (rows.length === 0) {
+        const applied = await schemaMigrations.findOne({ _id: file as any });
+        if (!applied) {
           Logger.info(`[Migrations] Applying ${file}...`);
-          // split sql into statements by ';' if needed, but mysql2 execute doesn't support multiple statements natively unless enabled.
-          // Wait, create pool needs multipleStatements: true to run raw migration scripts!
-          // We must ensure multipleStatements: true is set on pool, or we split the statements.
-          // For safety, we will just use pool with multipleStatements: true for migrations, or split it here.
-          const statements = sql.split(';').map(s => s.trim()).filter(s => s.length > 0);
-          for (const stmt of statements) {
-            await connection.query(stmt);
+          if (migration.up) {
+            await migration.up(db);
           }
-
-          await connection.query('INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)', [
-            file,
-            new Date(),
-            checksum,
-          ]);
+          await schemaMigrations.insertOne({ _id: file as any, appliedAt: new Date() });
           Logger.info(`[Migrations] Successfully applied ${file}`);
         }
       }
 
-      await seedInitialData(connection);
+      await seedInitialData(db);
+      await ensureIndexes(db);
 
     } finally {
-      await connection.query('SELECT RELEASE_LOCK(?)', [lockName]);
+      // Release lock
+      await lockCol.deleteOne({ _id: lockName as any, owner: instanceId });
     }
   } catch (error) {
-    Logger.error('[Migrations] Failed to run migrations:', error);
+    Logger.error(`[Migrations] Failed to run migrations: ${(error as Error).message}`);
     throw error;
-  } finally {
-    connection.release();
   }
 }
 
-async function seedInitialData(connection: any) {
-  // Seed system_versions
-  const [sysRows] = await connection.query("SELECT * FROM system_versions WHERE id IN ('GLOBAL_CONFIG', 'MEDIA_MANIFEST')");
-  const existingSys = sysRows.map((r: any) => r.id);
+async function seedInitialData(db: import('mongodb').Db) {
+  const sysCol = db.collection('system_versions');
   const now = new Date();
   
-  if (!existingSys.includes('GLOBAL_CONFIG')) {
-    await connection.query('INSERT INTO system_versions (id, version_number, updated_at) VALUES (?, ?, ?)', ['GLOBAL_CONFIG', 1, now]);
+  const sysConfig = await sysCol.findOne({ _id: 'GLOBAL_CONFIG' as any });
+  if (!sysConfig) {
+    await sysCol.insertOne({ _id: 'GLOBAL_CONFIG' as any, versionNumber: 1, updatedAt: now });
   }
-  if (!existingSys.includes('MEDIA_MANIFEST')) {
-    await connection.query('INSERT INTO system_versions (id, version_number, updated_at) VALUES (?, ?, ?)', ['MEDIA_MANIFEST', 1, now]);
+
+  const sysManifest = await sysCol.findOne({ _id: 'MEDIA_MANIFEST' as any });
+  if (!sysManifest) {
+    await sysCol.insertOne({ _id: 'MEDIA_MANIFEST' as any, versionNumber: 1, updatedAt: now });
   }
 
   // Seed Admin user
-  const [adminRows] = await connection.query("SELECT * FROM admin_users");
-  if (adminRows.length === 0) {
+  const adminCol = db.collection('admin_users');
+  const adminCount = await adminCol.countDocuments();
+  
+  if (adminCount === 0) {
     const email = process.env.ADMIN_EMAIL;
     const password = process.env.ADMIN_PASSWORD;
     const pin = process.env.ADMIN_PIN;
@@ -95,14 +98,31 @@ async function seedInitialData(connection: any) {
       Logger.info('[Migrations] Seeding initial admin user...');
       const passwordHash = await bcrypt.hash(password, 12);
       const pinHash = await bcrypt.hash(pin, 12);
-      const id = 'ADM-' + crypto.randomUUID();
-      await connection.query(`
-        INSERT INTO admin_users (id, email, password_hash, pin_hash, role, is_active, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
-      `, [id, email, passwordHash, pinHash, 'admin', now]);
+      const id = 'ADM-' + crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+      
+      await adminCol.insertOne({
+        _id: id as any,
+        email,
+        passwordHash,
+        pinHash,
+        role: 'admin',
+        isActive: true,
+        createdAt: now,
+      });
     } else {
       Logger.error('[Migrations] No admin user exists and ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_PIN env vars are missing. Cannot seed admin user. Refusing to start.');
       process.exit(1);
     }
   }
+}
+
+async function ensureIndexes(db: import('mongodb').Db) {
+  Logger.info('[Migrations] Ensuring indexes...');
+  await db.collection('screen_snapshots').createIndex({ screenId: 1 }, { unique: true });
+  await db.collection('device_commands').createIndex({ screenId: 1, createdAt: -1 });
+  await db.collection('media').createIndex({ createdAt: -1 });
+  
+  // P1-6 requirements: unique department/screen codes
+  await db.collection('departments').createIndex({ code: 1 }, { unique: true });
+  await db.collection('screens').createIndex({ code: 1 }, { unique: true });
 }

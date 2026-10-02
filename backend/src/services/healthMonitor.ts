@@ -1,6 +1,6 @@
 import { screenRepo } from '../db/repositories/screenRepository';
 import { emergencyRepo } from '../db/repositories/emergencyRepository';
-import { io } from '../server';
+import { getIO } from '../realtime/socket';
 import { HealthStatus, Screen } from '../types';
 import { Logger } from './logger';
 
@@ -13,11 +13,15 @@ export class HealthMonitor {
   }): Promise<HealthStatus> {
     const now = Date.now();
 
+    const settings = await import('./resolverService').then(m => m.resolverService.getGlobalSettings());
+    const heartbeatSeconds = settings?.heartbeatSeconds || 15;
+    const offlineThreshold = heartbeatSeconds * 3;
+
     if (!screen.lastHeartbeat) {
       return 'OFFLINE';
     }
     const diffSec = (now - new Date(screen.lastHeartbeat).getTime()) / 1000;
-    if (diffSec > 60) {
+    if (diffSec > offlineThreshold) {
       return 'OFFLINE';
     }
 
@@ -47,13 +51,16 @@ export class HealthMonitor {
   public async runWatchdog(): Promise<void> {
     const screens = await screenRepo.getAll();
     const now = Date.now();
+    const settings = await import('./resolverService').then(m => m.resolverService.getGlobalSettings());
+    const heartbeatSeconds = settings?.heartbeatSeconds || 15;
+    const offlineThreshold = heartbeatSeconds * 3;
 
     for (const screen of screens) {
       let isChanged = false;
 
       if (screen.lastHeartbeat) {
         const diffSec = (now - new Date(screen.lastHeartbeat).getTime()) / 1000;
-        if (diffSec > 60 && screen.connectionStatus === 'online') {
+        if (diffSec > offlineThreshold && screen.connectionStatus === 'online') {
           await screenRepo.update(screen.id, {
             connectionStatus: 'offline',
             healthStatus: 'OFFLINE',
@@ -69,13 +76,13 @@ export class HealthMonitor {
         isChanged = true;
       }
 
-      if (isChanged && io) {
-        io.emit('screen:status_change', {
+      if (isChanged && getIO()) {
+        getIO().emit('screen:status_change', {
           screenId: screen.id,
           status: 'offline',
           healthStatus: 'OFFLINE',
         });
-        io.emit('screens:changed');
+        getIO().emit('screens:changed');
       }
     }
   }

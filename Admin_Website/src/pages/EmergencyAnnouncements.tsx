@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState, useEffect } from 'react';
 import {
   AlertTriangle,
@@ -102,24 +103,25 @@ export const EmergencyAnnouncements: React.FC<EmergencyAnnouncementsProps> = ({
         onRefresh();
       }
     } catch (err: any) {
-      setFeedback(`Broadcast error: ${err.message}`);
+      setFeedback(`Broadcast error: ${getErrorMessage(err)}`);
     } finally {
       setBroadcasting(false);
     }
   };
 
   const handleDismiss = async () => {
+    if (!activeAnnouncement?.id) return;
     if (!confirm('Are you sure you want to dismiss the active emergency broadcast? All screens will restore normal OPD queue playback.')) {
       return;
     }
     setCancelling(true);
     try {
-      await api.post('/emergency/dismiss');
+      await api.post(`/emergency/${activeAnnouncement.id}/dismiss`);
       setActiveAnnouncement(null);
       setFeedback('Active emergency alert cancelled. Normal playback restored.');
       onRefresh();
     } catch (err: any) {
-      alert(`Error dismissing: ${err.message}`);
+      alert(`Error dismissing: ${getErrorMessage(err)}`);
     } finally {
       setCancelling(false);
     }

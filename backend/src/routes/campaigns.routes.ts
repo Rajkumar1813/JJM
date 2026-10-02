@@ -1,3 +1,4 @@
+import { configPublisher } from '../services/configPublisher';
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { campaignRepo } from '../db/repositories/campaignRepository';
@@ -5,7 +6,8 @@ import { screenRepo } from '../db/repositories/screenRepository';
 import { mediaRepo } from '../db/repositories/mediaRepository';
 import { auditRepo } from '../db/repositories/miscRepositories';
 import { resolverService } from '../services/resolverService';
-import { io } from '../server';
+import { getIO } from '../realtime/socket';
+import { getDb } from '../db/mongo';
 
 const router = Router();
 
@@ -17,15 +19,19 @@ const broadcastGlobalSchema = z.object({
   duration: z.union([z.string(), z.number()]).optional(),
 });
 
+const campaignStatusEnum = z.enum(['active', 'scheduled', 'paused', 'expired', 'draft']);
+const campaignTypeEnum = z.enum(['global', 'department', 'screen', 'emergency']);
+const contentTypeEnum = z.enum(['playlist', 'single_image', 'single_image_only', 'image', 'video', 'single_video', 'single_video_only', 'only_queue']);
+
 const createCampaignSchema = z.object({
   name: z.string().min(1, 'Campaign name is required'),
   description: z.string().optional(),
-  type: z.string().optional(),
-  contentType: z.string().optional(),
+  type: campaignTypeEnum.optional(),
+  contentType: contentTypeEnum.optional(),
   targetIds: z.array(z.string()).optional(),
-  mediaId: z.string().optional(),
-  mediaUrl: z.string().optional(),
-  playlistId: z.string().optional(),
+  mediaId: z.string().nullable().optional(),
+  mediaUrl: z.string().nullable().optional(),
+  playlistId: z.string().nullable().optional(),
   priority: z.union([z.string(), z.number()]).optional(),
   intervalMinutes: z.union([z.string(), z.number()]).optional(),
   displayDurationSeconds: z.union([z.string(), z.number()]).optional(),
@@ -34,6 +40,7 @@ const createCampaignSchema = z.object({
   endDate: z.string().optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  status: campaignStatusEnum.optional(),
 });
 
 const updateCampaignSchema = createCampaignSchema.partial();
@@ -54,6 +61,8 @@ router.post('/broadcast-global', async (req: Request, res: Response) => {
   const campaignName = name || `Global Broadcast - ${new Date().toLocaleTimeString()}`;
 
   const isVideo = media?.type === 'video' || (finalMediaUrl && (finalMediaUrl.endsWith('.mp4') || finalMediaUrl.endsWith('.webm')));
+  const displayDuration = duration ? parseInt(duration as string, 10) : (media?.duration || 15);
+  const endDate = new Date(Date.now() + displayDuration * 1000).toISOString();
   
   const campaign = await campaignRepo.create({
     name: campaignName,
@@ -65,23 +74,16 @@ router.post('/broadcast-global', async (req: Request, res: Response) => {
     mediaUrl: finalMediaUrl,
     priority: priority ? parseInt(priority as string, 10) : 95,
     intervalMinutes: 1,
-    displayDurationSeconds: duration ? parseInt(duration as string, 10) : (media?.duration || 15),
+    displayDurationSeconds: displayDuration,
     daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    endDate: endDate,
     status: 'active',
   });
 
   await screenRepo.incrementAllTargetConfigVersions();
-
+  
   const screens = await screenRepo.getAll();
-  if (io) {
-    for (const s of screens) {
-      try {
-        const config = await resolverService.resolveScreenConfig(s.id);
-        io.to(`screen:${s.id}`).emit('config:update', { config });
-      } catch (_) {}
-    }
-    io.emit('screens:changed');
-  }
+  await configPublisher.publish({ all: true });
 
   await auditRepo.log('GLOBAL_BROADCAST', 'Campaign', campaign.id, `Dispatched one-click global broadcast to ${screens.length} screens`);
   return res.status(201).json({ success: true, campaign, dispatchedScreens: screens.length });
@@ -108,15 +110,35 @@ router.post('/', async (req: Request, res: Response) => {
 
   const data = parsed.data;
 
+  const targetIds = Array.isArray(data.targetIds) && data.targetIds.length > 0 ? data.targetIds : ['all'];
+  for (const t of targetIds) {
+    if (t === 'all') continue;
+    if (t.startsWith('DEP-')) {
+      const dept = await getDb().collection('departments').findOne({ _id: t as any });
+      if (!dept) return res.status(400).json({ success: false, message: `Unknown department ID: ${t}` });
+    } else if (t.startsWith('SCR-')) {
+      const screen = await getDb().collection('screens').findOne({ _id: t as any });
+      if (!screen) return res.status(400).json({ success: false, message: `Unknown screen ID: ${t}` });
+    } else {
+      return res.status(400).json({ success: false, message: `Invalid target ID format: ${t}` });
+    }
+  }
+
+
+  let status = data.status || 'active';
+  if (data.startDate && new Date(data.startDate) > new Date()) {
+    status = 'scheduled';
+  }
+
   const campaign = await campaignRepo.create({
     name: data.name,
     description: data.description || '',
     type: (data.type as any) || 'global',
     contentType: (data.contentType as any) || 'single_image',
     targetIds: Array.isArray(data.targetIds) && data.targetIds.length > 0 ? data.targetIds : ['all'],
-    mediaId: data.mediaId,
-    mediaUrl: data.mediaUrl,
-    playlistId: data.playlistId,
+    mediaId: data.mediaId || undefined,
+    mediaUrl: data.mediaUrl || undefined,
+    playlistId: data.playlistId || undefined,
     priority: data.priority ? parseInt(data.priority as string, 10) : 50,
     intervalMinutes: data.intervalMinutes ? parseInt(data.intervalMinutes as string, 10) : 3,
     displayDurationSeconds: data.displayDurationSeconds ? parseInt(data.displayDurationSeconds as string, 10) : 15,
@@ -125,7 +147,7 @@ router.post('/', async (req: Request, res: Response) => {
     endDate: data.endDate,
     startTime: data.startTime,
     endTime: data.endTime,
-    status: 'active',
+    status: status as any,
   });
 
   if (campaign.targetIds.includes('all') || campaign.type === 'global') {
@@ -142,15 +164,8 @@ router.post('/', async (req: Request, res: Response) => {
     }
   }
 
-  if (io) {
-    const screens = await screenRepo.getAll();
-    for (const s of screens) {
-      try {
-        const config = await resolverService.resolveScreenConfig(s.id);
-        io.to(`screen:${s.id}`).emit('config:update', { config });
-      } catch (_) {}
-    }
-    io.emit('screens:changed');
+  if (getIO()) {
+    await configPublisher.publish({ all: true });
   }
 
   await auditRepo.log('CREATE_CAMPAIGN', 'Campaign', campaign.id, `Created campaign ${campaign.name}`);
@@ -164,6 +179,22 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 
   const updateData = parsed.data as any;
+  if (updateData.targetIds) {
+    const patchTargetIds = Array.isArray(updateData.targetIds) && updateData.targetIds.length > 0 ? updateData.targetIds : ['all'];
+    for (const t of patchTargetIds) {
+      if (t === 'all') continue;
+      if (t.startsWith('DEP-')) {
+        const dept = await getDb().collection('departments').findOne({ _id: t as any });
+        if (!dept) return res.status(400).json({ success: false, message: `Unknown department ID: ${t}` });
+      } else if (t.startsWith('SCR-')) {
+        const screen = await getDb().collection('screens').findOne({ _id: t as any });
+        if (!screen) return res.status(400).json({ success: false, message: `Unknown screen ID: ${t}` });
+      } else {
+        return res.status(400).json({ success: false, message: `Invalid target ID format: ${t}` });
+      }
+    }
+  }
+
   const campaign = await campaignRepo.update(req.params.id, updateData);
   if (!campaign) {
     return res.status(404).json({ success: false, message: 'Campaign not found' });
@@ -171,15 +202,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
   await screenRepo.incrementAllTargetConfigVersions();
 
-  if (io) {
-    const screens = await screenRepo.getAll();
-    for (const s of screens) {
-      try {
-        const config = await resolverService.resolveScreenConfig(s.id);
-        io.to(`screen:${s.id}`).emit('config:update', { config });
-      } catch (_) {}
-    }
-    io.emit('screens:changed');
+  if (getIO()) {
+    await configPublisher.publish({ all: true });
   }
 
   await auditRepo.log('UPDATE_CAMPAIGN', 'Campaign', campaign.id, `Updated campaign ${campaign.name}`);
@@ -194,15 +218,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
   await screenRepo.incrementAllTargetConfigVersions();
 
-  if (io) {
-    const screens = await screenRepo.getAll();
-    for (const s of screens) {
-      try {
-        const config = await resolverService.resolveScreenConfig(s.id);
-        io.to(`screen:${s.id}`).emit('config:update', { config });
-      } catch (_) {}
-    }
-    io.emit('screens:changed');
+  if (getIO()) {
+    await configPublisher.publish({ all: true });
   }
 
   await auditRepo.log('DELETE_CAMPAIGN', 'Campaign', req.params.id, `Deleted campaign ${req.params.id}`);

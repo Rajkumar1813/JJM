@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   Megaphone,
@@ -58,6 +59,10 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
   const [duration, setDuration] = useState(15);
   const [intervalMinutes, setIntervalMinutes] = useState(5);
   const [daysOfWeek, setDaysOfWeek] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Filtering campaigns by tab
@@ -82,6 +87,10 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     setDuration(15);
     setIntervalMinutes(5);
     setDaysOfWeek([0, 1, 2, 3, 4, 5, 6]);
+    setStartDate('');
+    setEndDate('');
+    setStartTime('');
+    setEndTime('');
     setShowCreateModal(true);
   };
 
@@ -107,6 +116,10 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
     setDuration(c.displayDurationSeconds || 15);
     setIntervalMinutes(c.intervalMinutes || 5);
     setDaysOfWeek(c.daysOfWeek?.length ? c.daysOfWeek : [0, 1, 2, 3, 4, 5, 6]);
+    setStartDate(c.startDate || '');
+    setEndDate(c.endDate || '');
+    setStartTime(c.startTime || '');
+    setEndTime(c.endTime || '');
   };
 
   const handleSaveCampaign = async (e: React.FormEvent) => {
@@ -128,6 +141,32 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
       const selectedMedia = media.find((m) => m.id === selectedMediaId) || media[0];
       const targetIds = targetScope === 'all' ? ['all'] : targetId ? [targetId] : [];
       const isVideo = selectedMedia?.type === 'video';
+
+      if (startDate && endDate && startDate > endDate) {
+        alert('End date cannot be before start date.');
+        setIsSubmitting(false);
+        return;
+      }
+      if (startTime && !endTime) {
+        alert('End time is required if start time is provided.');
+        setIsSubmitting(false);
+        return;
+      }
+      if (!startTime && endTime) {
+        alert('Start time is required if end time is provided.');
+        setIsSubmitting(false);
+        return;
+      }
+      if (startTime && endTime && startTime >= endTime) {
+        alert('End time must be after start time.');
+        setIsSubmitting(false);
+        return;
+      }
+      if (daysOfWeek.length === 0) {
+        alert('Please select at least one day of the week.');
+        setIsSubmitting(false);
+        return;
+      }
 
       let resolvedContentType = 'single_image_only';
       if (isPlaylistMode) {
@@ -151,7 +190,11 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
           priority: Number(priority),
           displayDurationSeconds: Number(duration),
           intervalMinutes: Number(intervalMinutes),
-          daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+          startTime: startTime || undefined,
+          endTime: endTime || undefined,
+          daysOfWeek,
         });
         setEditingCampaign(null);
       } else {
@@ -167,14 +210,18 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
           priority: Number(priority),
           displayDurationSeconds: Number(duration),
           intervalMinutes: Number(intervalMinutes),
-          daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+          daysOfWeek,
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+          startTime: startTime || undefined,
+          endTime: endTime || undefined,
           status: 'active',
         });
         setShowCreateModal(false);
       }
       onRefresh();
     } catch (err: any) {
-      alert(`Error saving campaign: ${err.message}`);
+      alert(`Error saving campaign: ${getErrorMessage(err)}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -186,7 +233,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
       await api.patch(`/campaigns/${c.id}`, { status: nextStatus });
       onRefresh();
     } catch (err: any) {
-      alert(`Failed to update campaign status: ${err.message}`);
+      alert(`Failed to update campaign status: ${getErrorMessage(err)}`);
     }
   };
 
@@ -199,16 +246,17 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
         contentType: c.contentType,
         mediaId: c.mediaId,
         mediaUrl: c.mediaUrl,
+        playlistId: c.playlistId,
         targetIds: c.targetIds,
         priority: c.priority,
         displayDurationSeconds: c.displayDurationSeconds,
         intervalMinutes: c.intervalMinutes,
-        daysOfWeek: c.daysOfWeek || [1, 2, 3, 4, 5, 6, 7],
-        status: 'draft',
+        daysOfWeek: c.daysOfWeek || [0, 1, 2, 3, 4, 5, 6],
+        status: 'paused',
       });
       onRefresh();
     } catch (err: any) {
-      alert(`Duplicate failed: ${err.message}`);
+      alert(`Duplicate failed: ${getErrorMessage(err)}`);
     }
   };
 
@@ -218,7 +266,7 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
       await api.delete(`/campaigns/${id}`);
       onRefresh();
     } catch (err: any) {
-      alert(`Delete failed: ${err.message}`);
+      alert(`Delete failed: ${getErrorMessage(err)}`);
     }
   };
 
@@ -747,6 +795,49 @@ export const CampaignsPage: React.FC<CampaignsPageProps> = ({
                     </select>
                   </div>
                 )}
+
+                
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '12px' }}>
+                  <div>
+                    <label className="form-label">Start Date</label>
+                    <input type="date" className="form-input" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="form-label">End Date</label>
+                    <input type="date" className="form-input" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '12px' }}>
+                  <div>
+                    <label className="form-label">Start Time</label>
+                    <input type="time" className="form-input" value={startTime} onChange={e => setStartTime(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="form-label">End Time</label>
+                    <input type="time" className="form-input" value={endTime} onChange={e => setEndTime(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ marginTop: '12px', marginBottom: '12px' }}>
+                  <label className="form-label">Active Days of Week</label>
+                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        className={daysOfWeek.includes(idx) ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm'}
+                        onClick={() => {
+                          if (daysOfWeek.includes(idx)) {
+                            setDaysOfWeek(daysOfWeek.filter(d => d !== idx));
+                          } else {
+                            setDaysOfWeek([...daysOfWeek, idx].sort());
+                          }
+                        }}
+                      >
+                        {day}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div>

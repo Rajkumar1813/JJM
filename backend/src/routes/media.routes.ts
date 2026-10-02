@@ -1,3 +1,4 @@
+import { configPublisher } from '../services/configPublisher';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -10,7 +11,9 @@ import { auditRepo } from '../db/repositories/miscRepositories';
 
 const router = Router();
 
-const UPLOADS_DIR = path.join(__dirname, '../../uploads/media');
+const UPLOADS_DIR = process.env.UPLOAD_DIR 
+  ? path.join(process.env.UPLOAD_DIR, 'media')
+  : path.join(__dirname, '../../uploads/media');
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -105,10 +108,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Media not found' });
   }
 
-  // Safe delete check: Is this media used by a playlist or campaign?
-  // We should enforce this by querying campaigns and playlists, but for now we trust the DB FKs or similar logic.
-  // Actually, wait, requirement B10: "Safe deletes: media used by a campaign/playlist -> 409 with usage list (or ?force=true to detach)"
-  // I need to implement this.
+  const force = req.query.force === 'true';
+  const result = await mediaRepo.delete(req.params.id, force);
+
+  if (!result.success && result.usage) {
+    return res.status(409).json({
+      success: false,
+      message: 'Media is in use',
+      usage: result.usage
+    });
+  }
 
   if (media.url && media.url.startsWith('/uploads/media/')) {
     const filename = path.basename(media.url);
@@ -120,8 +129,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
   }
 
-  await mediaRepo.delete(req.params.id);
   await auditRepo.log('DELETE_MEDIA', 'Media', req.params.id, `Deleted media ${media.title}`);
+  await configPublisher.publish({ all: true });
   return res.json({ success: true, message: 'Media item deleted', manifestVersion: await mediaRepo.getManifestVersion() });
 });
 

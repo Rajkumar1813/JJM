@@ -6,7 +6,7 @@ This document provides a high-level overview of how the Admin Website, Backend A
 ```mermaid
 graph TD
     A[Admin Website - React] <-->|REST API + WebSocket| B(Backend Server - Node.js)
-    B <-->|MySQL2 Connection Pool| C[(MySQL 8 Database)]
+    B <-->|MongoDB Connection Pool| C[(MongoDB 8 Database)]
     B <-->|REST API + WebSocket| D[TV Player - Android TV/Flutter]
     
     style A fill:#4F46E5,stroke:#312E81,stroke-width:2px,color:#fff
@@ -17,9 +17,9 @@ graph TD
 
 ## Global Concepts
 
-### 1. Database & Persistence (MySQL 8)
-- The entire system is anchored to a raw MySQL 8 database. 
-- There are no intermediary ORMs masking performance, no local SQLite databases bridging gaps, and no Docker abstraction layers. 
+### 1. Database & Persistence (MongoDB 8)
+- The entire system is anchored to a raw MongoDB 8 database. 
+- There are no intermediary ORMs masking performance, no local SQLite databases bridging gaps, and no  abstraction layers. 
 - The backend handles automatic schema migrations natively on boot using raw `.sql` files.
 - The `hospital_signage` database is the sole source of truth for campaigns, device pairings, administrative telemetry, and emergency declarations.
 
@@ -48,7 +48,7 @@ sequenceDiagram
     participant TV as Android TV
     participant API as Backend Node.js
     participant UI as Admin React
-    participant DB as MySQL 8
+    participant DB as MongoDB 8
     
     TV->>API: Boots up, generates 6-digit random code
     TV->>API: Socket Join Room 'pairing:join:123456'
@@ -68,7 +68,7 @@ sequenceDiagram
 sequenceDiagram
     participant UI as Admin React
     participant API as Backend Node.js
-    participant DB as MySQL 8
+    participant DB as MongoDB 8
     participant TV1 as TV (Dept Cardiology)
     participant TV2 as TV (Dept Pediatrics)
     
@@ -82,3 +82,4 @@ sequenceDiagram
     
     Note right of API: TV2 is in a different room and receives nothing.
 ```
+

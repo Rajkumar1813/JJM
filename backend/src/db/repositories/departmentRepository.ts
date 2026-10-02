@@ -1,78 +1,80 @@
-import { query, queryOne, execute } from '../mysql';
 import { Department } from '../../types';
-import { generateId, buildUpdateQuery, formatDateTimeToISO } from './repoUtils';
+import { generateId, buildMongoUpdate, formatDateTimeToISO, mapMongoToApi, mapMongoListToApi } from './repoUtils';
+import { getDb, withTransaction } from '../mongo';
 
 export class DepartmentRepository {
-  public async getAll(): Promise<Department[]> {
-    const rows = await query('SELECT * FROM departments ORDER BY name ASC');
-    return rows.map(r => this.mapRow(r));
+  private get col() {
+    return getDb().collection('departments');
   }
 
-  public async getById(id: string): Promise<Department | undefined> {
-    const r = await queryOne('SELECT * FROM departments WHERE id = ?', [id]);
-    return r ? this.mapRow(r) : undefined;
+  public async getAll(): Promise<Department[]> {
+    const rows = await this.col.find({}).sort({ name: 1 }).toArray();
+    return mapMongoListToApi(rows);
+  }
+
+  public async getById(id: string): Promise<Department | null> {
+    const r = await this.col.findOne({ _id: id as any });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
   public async create(dept: Omit<Department, 'id' | 'createdAt'> & { id?: string }): Promise<Department> {
     const id = dept.id || generateId('DEP');
     const createdAt = new Date();
 
-    await execute(`
-      INSERT INTO departments (id, name, code, floor, description, default_queue_url, default_playlist_id, doctor_in_charge, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      id,
-      dept.name,
-      dept.code.toUpperCase(),
-      dept.floor,
-      dept.description || '',
-      dept.defaultQueueUrl,
-      dept.defaultPlaylistId || null,
-      (dept as any).doctorInCharge || null, // from schema migration
-      dept.status || 'active',
-      createdAt
-    ]);
+    const newDept = {
+      _id: id,
+      name: dept.name,
+      code: dept.code.toUpperCase(),
+      floor: dept.floor,
+      description: dept.description || '',
+      defaultQueueUrl: dept.defaultQueueUrl,
+      defaultPlaylistId: dept.defaultPlaylistId || null,
+      doctorInCharge: (dept as any).doctorInCharge || null,
+      status: dept.status || 'active',
+      createdAt,
+    };
 
+    await this.col.insertOne(newDept as any);
     return (await this.getById(id))!;
   }
 
   public async update(id: string, updates: Partial<Department>): Promise<Department | null> {
-    const dbUpdates: Record<string, any> = {};
-    if (updates.name !== undefined) dbUpdates.name = updates.name;
-    if (updates.code !== undefined) dbUpdates.code = updates.code.toUpperCase();
-    if (updates.floor !== undefined) dbUpdates.floor = updates.floor;
-    if (updates.description !== undefined) dbUpdates.description = updates.description;
-    if (updates.defaultQueueUrl !== undefined) dbUpdates.default_queue_url = updates.defaultQueueUrl;
-    if (updates.defaultPlaylistId !== undefined) dbUpdates.default_playlist_id = updates.defaultPlaylistId;
-    if (updates.status !== undefined) dbUpdates.status = updates.status;
-    if ((updates as any).doctorInCharge !== undefined) dbUpdates.doctor_in_charge = (updates as any).doctorInCharge;
+    const dbUpdates = buildMongoUpdate({
+      name: updates.name,
+      code: updates.code ? updates.code.toUpperCase() : undefined,
+      floor: updates.floor,
+      description: updates.description,
+      defaultQueueUrl: updates.defaultQueueUrl,
+      defaultPlaylistId: updates.defaultPlaylistId,
+      status: updates.status,
+      doctorInCharge: (updates as any).doctorInCharge,
+    });
 
-    const q = buildUpdateQuery('departments', id, dbUpdates);
-    if (q) {
-      await execute(q.sql, q.values);
+    if (dbUpdates) {
+      await this.col.updateOne({ _id: id as any }, dbUpdates);
     }
-
     return await this.getById(id) || null;
   }
 
   public async delete(id: string): Promise<boolean> {
-    const res = await execute('DELETE FROM departments WHERE id = ?', [id]);
-    return res.affectedRows > 0;
-  }
+    return await withTransaction(async (session) => {
+      // Pull this department from campaign targets
+      await getDb().collection('campaigns').updateMany(
+        { 'targets.targetId': id, 'targets.targetType': 'DEPARTMENT' },
+        { $pull: { targets: { targetId: id, targetType: 'DEPARTMENT' } } as any },
+        { session }
+      );
+      
+      // Emergency events targets array
+      await getDb().collection('emergency_events').updateMany(
+        { targetIds: id, targetType: 'DEPARTMENT' },
+        { $pull: { targetIds: id } as any },
+        { session }
+      );
 
-  private mapRow(r: any): Department {
-    return {
-      id: r.id,
-      name: r.name,
-      code: r.code,
-      floor: r.floor,
-      description: r.description || '',
-      defaultQueueUrl: r.default_queue_url,
-      defaultPlaylistId: r.default_playlist_id || undefined,
-      status: r.status as 'active' | 'inactive',
-      createdAt: formatDateTimeToISO(r.created_at)!,
-      ...((r.doctor_in_charge ? { doctorInCharge: r.doctor_in_charge } : {}) as any)
-    };
+      const res = await this.col.deleteOne({ _id: id as any }, { session });
+      return res.deletedCount > 0;
+    });
   }
 }
 

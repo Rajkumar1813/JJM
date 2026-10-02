@@ -32,9 +32,9 @@ export class CommandService {
     Logger.command('CREATED', commandId, screenId, { commandType, payload });
 
     try {
-      const io = getIO();
+      
       const room = `screen:${screen.id}`;
-      io.to(room).emit('device:command', {
+      getIO().to(room).emit('device:command', {
         commandId: command.id,
         screenId: screen.id,
         commandType: command.commandType,
@@ -45,7 +45,7 @@ export class CommandService {
       await commandRepo.markSent(command.id);
       Logger.command('SENT', commandId, screenId, { room });
 
-      io.to('admins').emit('command:status_updated', {
+      getIO().to('admins').emit('command:status_updated', {
         commandId: command.id,
         screenId: screen.id,
         status: 'SENT',
@@ -62,8 +62,8 @@ export class CommandService {
     if (cmd) {
       Logger.command('RECEIVED', commandId, screenId);
       try {
-        const io = getIO();
-        io.to('admins').emit('command:status_updated', {
+        
+        getIO().to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'RECEIVED',
@@ -79,8 +79,8 @@ export class CommandService {
     if (cmd) {
       Logger.command('APPLIED', commandId, screenId);
       try {
-        const io = getIO();
-        io.to('admins').emit('command:status_updated', {
+        
+        getIO().to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'APPLIED',
@@ -104,15 +104,15 @@ export class CommandService {
       }
 
       try {
-        const io = getIO();
-        io.to('admins').emit('command:status_updated', {
+        
+        getIO().to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'ACKNOWLEDGED',
           commandType: cmd.commandType,
           resultPayload,
         });
-        io.to('admins').emit('screens:changed');
+        getIO().to('admins').emit('screens:changed');
       } catch(e) {}
 
       await auditRepo.log('COMMAND_ACK', 'Screen', screenId, `Command ${cmd.commandType} (${commandId}) successfully acknowledged`);
@@ -125,8 +125,8 @@ export class CommandService {
     if (cmd) {
       Logger.command('FAILED', commandId, screenId, { errorMessage });
       try {
-        const io = getIO();
-        io.to('admins').emit('command:status_updated', {
+        
+        getIO().to('admins').emit('command:status_updated', {
           commandId: cmd.id,
           screenId: cmd.screenId,
           status: 'FAILED',
@@ -140,11 +140,11 @@ export class CommandService {
   }
 
   public async reapTimeouts(): Promise<void> {
-    const reaped = await commandRepo.reapExpiredTimeouts(30000);
+    const reaped = await commandRepo.reapExpiredTimeouts();
     if (reaped > 0) {
       try {
-        const io = getIO();
-        io.to('admins').emit('commands:reaped', { reapedCount: reaped });
+        
+        getIO().to('admins').emit('commands:reaped', { reapedCount: reaped });
       } catch(e) {}
     }
   }

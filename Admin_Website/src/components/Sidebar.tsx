@@ -26,6 +26,8 @@ interface SidebarProps {
   onLogout?: () => void;
   isMobileOpen?: boolean;
   onCloseMobile?: () => void;
+  hospitalName?: string;
+  hospitalBranch?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -37,6 +39,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   isMobileOpen,
   onCloseMobile,
+  hospitalName = 'JJM HOSPITAL',
+  hospitalBranch = 'KASHIPUR • SIGNAGE',
 }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -134,9 +138,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   color: 'var(--dark)',
                   letterSpacing: '0.02em',
                   lineHeight: 1.2,
+                  textTransform: 'uppercase'
                 }}
               >
-                JJM HOSPITAL
+                {hospitalName}
               </div>
               <div
                 style={{
@@ -144,9 +149,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   fontWeight: 600,
                   color: 'var(--primary)',
                   letterSpacing: '0.04em',
+                  textTransform: 'uppercase'
                 }}
               >
-                KASHIPUR • SIGNAGE
+                {hospitalBranch}
               </div>
             </div>
           </div>

@@ -1,21 +1,25 @@
-import { query, queryOne, execute } from '../mysql';
 import { Device } from '../../types';
-import { generateId, formatDateTimeToISO } from './repoUtils';
+import { generateId, mapMongoToApi, mapMongoListToApi } from './repoUtils';
+import { getDb } from '../mongo';
 
 export class DeviceRepository {
+  private get col() {
+    return getDb().collection('devices');
+  }
+
   public async getAll(): Promise<Device[]> {
-    const rows = await query('SELECT * FROM devices ORDER BY last_seen_at DESC');
-    return rows.map(r => this.mapRow(r));
+    const rows = await this.col.find({}).sort({ lastSeenAt: -1 }).toArray();
+    return mapMongoListToApi(rows);
   }
 
-  public async getById(id: string): Promise<Device | undefined> {
-    const r = await queryOne('SELECT * FROM devices WHERE id = ?', [id]);
-    return r ? this.mapRow(r) : undefined;
+  public async getById(id: string): Promise<Device | null> {
+    const r = await this.col.findOne({ _id: id as any });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
-  public async getByToken(token: string): Promise<Device | undefined> {
-    const r = await queryOne('SELECT * FROM devices WHERE device_token = ?', [token]);
-    return r ? this.mapRow(r) : undefined;
+  public async getByToken(token: string): Promise<Device | null> {
+    const r = await this.col.findOne({ deviceToken: token });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
   public async upsert(device: {
@@ -28,49 +32,30 @@ export class DeviceRepository {
     macAddress?: string;
   }): Promise<Device> {
     const now = new Date();
-    const id = device.id || generateId('DEV');
     
-    await execute(`
-      INSERT INTO devices (id, device_token, platform, model, app_version, ip_address, mac_address, last_seen_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE 
-        platform = VALUES(platform),
-        model = VALUES(model),
-        app_version = VALUES(app_version),
-        ip_address = VALUES(ip_address),
-        mac_address = VALUES(mac_address),
-        last_seen_at = VALUES(last_seen_at)
-    `, [
-      id,
-      device.deviceToken,
-      device.platform,
-      device.model || null,
-      device.appVersion,
-      device.ipAddress || null,
-      device.macAddress || null,
-      now,
-      now
-    ]);
+    const updatePayload = {
+      platform: device.platform,
+      model: device.model || null,
+      appVersion: device.appVersion,
+      ipAddress: device.ipAddress || null,
+      macAddress: device.macAddress || null,
+      lastSeenAt: now,
+    };
 
-    return (await this.getByToken(device.deviceToken))!;
+    const r = await this.col.findOneAndUpdate(
+      { deviceToken: device.deviceToken },
+      { 
+        $set: updatePayload,
+        $setOnInsert: { _id: device.id || generateId('DEV'), createdAt: now } 
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    return mapMongoToApi(r)!;
   }
 
   public async updateLastSeen(id: string): Promise<void> {
-    await execute('UPDATE devices SET last_seen_at = ? WHERE id = ?', [new Date(), id]);
-  }
-
-  private mapRow(r: any): Device {
-    return {
-      id: r.id,
-      deviceToken: r.device_token,
-      platform: r.platform,
-      model: r.model || undefined,
-      appVersion: r.app_version,
-      ipAddress: r.ip_address || undefined,
-      macAddress: r.mac_address || undefined,
-      lastSeenAt: formatDateTimeToISO(r.last_seen_at)!,
-      createdAt: formatDateTimeToISO(r.created_at)!,
-    };
+    await this.col.updateOne({ _id: id as any }, { $set: { lastSeenAt: new Date() } });
   }
 }
 

@@ -1,17 +1,25 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { queryOne } from '../db/mysql';
+import { getDb } from '../db/mongo';
 import { Logger } from '../services/logger';
 import { screenRepo } from '../db/repositories/screenRepository';
+import { mapMongoToApi } from '../db/repositories/repoUtils';
 
 export const isValidAdminToken = async (token: string): Promise<any> => {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const row = await queryOne<any>(`
-    SELECT a.* FROM admin_sessions s
-    JOIN admin_users a ON s.admin_user_id = a.id
-    WHERE s.token_hash = ? AND s.expires_at > ? AND a.is_active = 1
-  `, [tokenHash, Date.now()]);
-  return row || null;
+  const session = await getDb().collection('admin_sessions').findOne({ 
+    tokenHash, 
+    expiresAt: { $gt: Date.now() } 
+  });
+  
+  if (!session) return null;
+
+  const user = await getDb().collection('admin_users').findOne({ 
+    _id: session.adminUserId, 
+    isActive: true 
+  });
+
+  return user ? mapMongoToApi(user) : null;
 };
 
 export const requireAdminAuth = async (req: Request, res: Response, next: NextFunction) => {

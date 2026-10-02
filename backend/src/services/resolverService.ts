@@ -5,22 +5,64 @@ import { mediaRepo } from '../db/repositories/mediaRepository';
 import { playlistRepo } from '../db/repositories/miscRepositories';
 import { emergencyRepo } from '../db/repositories/emergencyRepository';
 import { ResolvedDisplayConfig, Screen, Campaign, PlaylistItem } from '../types';
+import { getDb } from '../db/mongo';
 
 export class ResolverService {
+  public async getGlobalSettings(): Promise<any> {
+    const rows = await getDb().collection('settings').find().toArray();
+    return rows.reduce((acc: any, row: any) => {
+      acc[row._id] = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+      return acc;
+    }, {});
+  }
+
+  private async hydrateMedia(items: PlaylistItem[], defaultDuration?: number): Promise<PlaylistItem[]> {
+    const hydrated = [];
+    for (const item of items) {
+      const hItem = { ...item };
+      if (!hItem.duration || hItem.duration <= 0) {
+        hItem.duration = defaultDuration || 15;
+      }
+      if (hItem.mediaId) {
+        const media = await mediaRepo.getById(hItem.mediaId);
+        if (media) {
+          hItem.mediaUrl = media.url;
+          hItem.sha256Hash = media.sha256Hash;
+          hItem.fileSize = media.fileSize;
+        }
+      }
+      hydrated.push(hItem);
+    }
+    return hydrated;
+  }
+
   public async resolveScreenConfig(screenId: string): Promise<ResolvedDisplayConfig> {
     const screen = await screenRepo.getById(screenId);
     if (!screen) {
       throw new Error(`Screen with ID ${screenId} not found`);
     }
 
+    const globalSettings = await this.getGlobalSettings();
+
     const department = await departmentRepo.getById(screen.departmentId);
     const departmentName = department?.name || 'Hospital Department';
-    const queueUrl = screen.queueUrl || department?.defaultQueueUrl || 'https://hms.jjmhospitalkashipur.com/qd';
-    const staleThresholdSeconds = screen.staleThresholdSeconds || 180;
+    const queueUrl = screen.queueUrl || department?.defaultQueueUrl || globalSettings.defaultQueueUrl || 'https://hms.jjmhospitalkashipur.com/qd';
+    const staleThresholdSeconds = screen.staleThresholdSeconds || globalSettings.staleThreshold || 180;
+    const defaultDuration = globalSettings.defaultDuration || 15;
     const configVersion = screen.targetConfigVersion || 1;
     const mediaManifestVersion = await mediaRepo.getManifestVersion();
 
     const activeEmergency = await emergencyRepo.getActive(screen.id, screen.departmentId);
+
+    const baseSettings = {
+      transition: 'fade' as 'fade' | 'slide' | 'none',
+      heartbeatSeconds: globalSettings.heartbeatInterval || 20,
+      offlineMediaCached: true,
+      powerState: screen.powerState || 'on',
+      kioskLock: !!globalSettings.kioskLock,
+      soundAlerts: !!globalSettings.soundAlerts,
+      kioskPinHash: globalSettings.kioskPinHash,
+    };
 
     if (screen.isPaused) {
       return {
@@ -37,11 +79,8 @@ export class ResolverService {
           { id: 'item-pause-queue', type: 'queue', title: 'Doctor Live Token Queue', duration: 9999, order: 1 },
         ],
         settings: {
-          transition: 'fade',
-          heartbeatSeconds: 20,
-          offlineMediaCached: true,
+          ...baseSettings,
           isPaused: true,
-          powerState: screen.powerState || 'on',
           emergencyAnnouncement: activeEmergency || undefined,
         },
       };
@@ -59,7 +98,9 @@ export class ResolverService {
         configVersion,
         mediaManifestVersion,
         winningCampaign,
-        activeEmergency || undefined
+        activeEmergency || undefined,
+        baseSettings,
+        defaultDuration
       );
     }
 
@@ -76,6 +117,8 @@ export class ResolverService {
       ? playlist.items
       : [{ id: 'item-1', type: 'queue', title: 'Doctor Live Token Queue', duration: 30, order: 1 }];
 
+    const hydratedItems = await this.hydrateMedia(playlistItems, defaultDuration);
+
     return {
       screenId: screen.id,
       screenName: screen.name,
@@ -86,13 +129,10 @@ export class ResolverService {
       configVersion,
       mediaManifestVersion,
       activeCampaign: null,
-      playlist: playlistItems,
+      playlist: hydratedItems,
       settings: {
-        transition: 'fade',
-        heartbeatSeconds: 20,
-        offlineMediaCached: true,
+        ...baseSettings,
         isPaused: !!screen.isPaused,
-        powerState: screen.powerState || 'on',
         emergencyAnnouncement: activeEmergency || undefined,
       },
     };
@@ -106,7 +146,9 @@ export class ResolverService {
     configVersion: number,
     mediaManifestVersion: number,
     campaign: Campaign,
-    emergency: any
+    emergency: any,
+    baseSettings: any,
+    defaultDuration: number
   ): Promise<ResolvedDisplayConfig> {
     let items: PlaylistItem[] = [];
 
@@ -139,7 +181,7 @@ export class ResolverService {
           ? campaign.displayDurationSeconds
           : media?.duration && media.duration > 0
           ? media.duration
-          : 15;
+          : defaultDuration;
 
       const queueDuration =
         campaign.intervalMinutes && campaign.intervalMinutes > 0
@@ -151,29 +193,23 @@ export class ResolverService {
         campaign.contentType === 'single_video_only' ||
         campaign.contentType === 'fullscreen_only';
 
+      const adItem = {
+        id: `camp-ad-${campaign.id}`,
+        type: itemType,
+        mediaId: campaign.mediaId || media?.id,
+        mediaUrl,
+        sha256Hash: media?.sha256Hash,
+        fileSize: media?.fileSize,
+        title: campaign.name,
+        duration: adDuration,
+        order: 1,
+      };
+
       if (isFullscreenOnly) {
-        items = [
-          {
-            id: `camp-ad-${campaign.id}`,
-            type: itemType,
-            mediaId: campaign.mediaId || media?.id,
-            mediaUrl,
-            title: campaign.name,
-            duration: adDuration,
-            order: 1,
-          },
-        ];
+        items = [adItem];
       } else {
         items = [
-          {
-            id: `camp-ad-${campaign.id}`,
-            type: itemType,
-            mediaId: campaign.mediaId || media?.id,
-            mediaUrl,
-            title: campaign.name,
-            duration: adDuration,
-            order: 1,
-          },
+          adItem,
           {
             id: `camp-q-${campaign.id}`,
             type: 'queue',
@@ -187,6 +223,8 @@ export class ResolverService {
 
     if (!items.length) {
       items = [{ id: 'camp-q-only', type: 'queue', title: 'Doctor Live Token Queue', duration: 30, order: 1 }];
+    } else {
+      items = await this.hydrateMedia(items, defaultDuration);
     }
 
     return {
@@ -207,11 +245,8 @@ export class ResolverService {
       },
       playlist: items,
       settings: {
-        transition: 'fade',
-        heartbeatSeconds: 20,
-        offlineMediaCached: true,
+        ...baseSettings,
         isPaused: !!screen.isPaused,
-        powerState: screen.powerState || 'on',
         emergencyAnnouncement: emergency,
         announcementTicker: campaign.type === 'emergency' ? campaign.name : undefined,
       },

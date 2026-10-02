@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   Tv,
@@ -94,7 +95,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       onRefresh?.();
       setTimeout(() => setBroadcastFeedback(null), 5000);
     } catch (err: any) {
-      setBroadcastFeedback(`Error creating broadcast: ${err.message}`);
+      setBroadcastFeedback(`Error creating broadcast: ${getErrorMessage(err)}`);
     } finally {
       setIsBroadcasting(false);
     }
@@ -106,7 +107,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       await api.post(`/screens/${screenId}/toggle-pause`);
       onRefresh?.();
     } catch (err: any) {
-      alert(`Failed to pause/resume screen: ${err.message}`);
+      alert(`Failed to pause/resume screen: ${getErrorMessage(err)}`);
     }
   };
 
@@ -117,7 +118,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       await api.post(`/screens/${screen.id}/power`, { state: nextState });
       onRefresh?.();
     } catch (err: any) {
-      alert(`Failed to change power state: ${err.message}`);
+      alert(`Failed to change power state: ${getErrorMessage(err)}`);
     }
   };
 

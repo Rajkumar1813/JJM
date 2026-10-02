@@ -4,6 +4,7 @@ import '../config/app_config.dart';
 import '../storage/storage_service.dart';
 import '../network/api_service.dart';
 import '../../models/display_models.dart';
+import '../sync/media_cache_service.dart';
 
 class SocketService {
   static io.Socket? _socket;
@@ -21,8 +22,6 @@ class SocketService {
   static Function()? onUnpaired;
   static Function(bool isConnected)? onConnectionChanged;
   static Function(Map<String, dynamic>? announcement)? onEmergencyUpdate;
-  static Function()? onRequestSnapshot;
-  static Function(bool watching)? onSnapshotWatch;
 
   static Future<void> init({
     String? screenId,
@@ -74,6 +73,8 @@ class SocketService {
 
           // Trigger authoritative REST reconciliation after socket reconnect
           onReconcileRequested?.call();
+        } else if (pairingCode != null) {
+          _socket!.emit('pairing:join', pairingCode);
         }
       });
 
@@ -83,7 +84,6 @@ class SocketService {
 
       // Listen for pairing event if code provided
       if (pairingCode != null && onPaired != null) {
-        _socket!.emit('pairing:join', pairingCode);
         _socket!.on('paired', (data) {
           if (data is Map<String, dynamic>) {
             onPaired(data);
@@ -127,12 +127,6 @@ class SocketService {
         }
       });
 
-      // Snapshot request listener
-      _socket!.on('command:request_snapshot', (data) {
-        if (onRequestSnapshot != null) {
-          onRequestSnapshot!();
-        }
-      });
 
       // Emergency alert listener
       _socket!.on('emergency:update', (data) {
@@ -164,13 +158,7 @@ class SocketService {
         }
       });
 
-      _socket!.on('snapshot:watch', (data) {
-        final Map map = data is Map ? data : {};
-        if (map['screenId'] == null || map['screenId'] == _currentScreenId) {
-          final watching = map['watching'] == true;
-          onSnapshotWatch?.call(watching);
-        }
-      });
+
     } catch (_) {}
   }
 
@@ -233,19 +221,40 @@ class SocketService {
     if (queueLastUpdate != null) _queueLastUpdateAt = queueLastUpdate;
   }
 
+  static int _heartbeatSeconds = 20;
+  static void updateHeartbeatInterval(int seconds) {
+    if (seconds > 0 && seconds != _heartbeatSeconds) {
+      _heartbeatSeconds = seconds;
+      _startHeartbeat();
+    }
+  }
+
   static void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+    _heartbeatTimer = Timer.periodic(Duration(seconds: _heartbeatSeconds), (_) {
+      final payload = {
+        'screenId': _currentScreenId,
+        'currentContent': _currentContent,
+        'playerVersion': AppConfig.appVersion,
+        'appliedConfigVersion': _appliedConfigVersion,
+        'mediaManifestVersion': _mediaManifestVersion,
+        'queueConnected': _queueConnected,
+        'queueLastUpdateAt': _queueLastUpdateAt.toIso8601String(),
+        'hasMediaError': MediaCacheService.hasMediaError,
+      };
+
       if (_socket != null && _socket!.connected && _currentScreenId != null) {
-        _socket!.emit('screen:heartbeat', {
-          'screenId': _currentScreenId,
-          'currentContent': _currentContent,
-          'playerVersion': AppConfig.appVersion,
-          'appliedConfigVersion': _appliedConfigVersion,
-          'mediaManifestVersion': _mediaManifestVersion,
-          'queueConnected': _queueConnected,
-          'queueLastUpdateAt': _queueLastUpdateAt.toIso8601String(),
-        });
+        _socket!.emit('screen:heartbeat', payload);
+      } else if (_currentScreenId != null && _currentContent != null) {
+        ApiService.sendHeartbeat(
+          screenId: _currentScreenId!,
+          currentContent: _currentContent!,
+          appliedConfigVersion: _appliedConfigVersion,
+          mediaManifestVersion: _mediaManifestVersion,
+          queueConnected: _queueConnected,
+          queueLastUpdateAt: _queueLastUpdateAt.toIso8601String(),
+          hasMediaError: MediaCacheService.hasMediaError,
+        ).catchError((_) {});
       }
     });
   }

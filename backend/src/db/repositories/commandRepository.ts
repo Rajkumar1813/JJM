@@ -1,8 +1,12 @@
-import { query, queryOne, execute } from '../mysql';
 import { DeviceCommand, CommandType, CommandStatus } from '../../types';
-import { generateId, buildUpdateQuery, formatDateTimeToISO, safeJson } from './repoUtils';
+import { generateId, mapMongoToApi } from './repoUtils';
+import { getDb } from '../mongo';
 
 export class CommandRepository {
+  private get col() {
+    return getDb().collection('device_commands');
+  }
+
   public async create(cmd: {
     id?: string;
     screenId: string;
@@ -15,102 +19,87 @@ export class CommandRepository {
     const createdAt = new Date();
     const expiresAt = cmd.expiresAt || (Date.now() + 60000); // 60s default expiry
 
-    await execute(`
-      INSERT INTO device_commands (
-        id, screen_id, device_id, command_type, payload, status, created_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, 'CREATED', ?, ?)
-    `, [
-      id,
-      cmd.screenId,
-      cmd.deviceId || null,
-      cmd.commandType,
-      cmd.payload ? JSON.stringify(cmd.payload) : null,
+    const newCmd = {
+      _id: id,
+      screenId: cmd.screenId,
+      deviceId: cmd.deviceId || null,
+      commandType: cmd.commandType,
+      payload: cmd.payload || null,
+      status: 'CREATED' as CommandStatus,
       createdAt,
-      expiresAt
-    ]);
+      expiresAt,
+    };
 
+    await this.col.insertOne(newCmd as any);
     return (await this.getById(id))!;
   }
 
-  public async getById(id: string): Promise<DeviceCommand | undefined> {
-    const r = await queryOne('SELECT * FROM device_commands WHERE id = ?', [id]);
-    return r ? this.mapRow(r) : undefined;
+  public async getById(id: string): Promise<DeviceCommand | null> {
+    const r = await this.col.findOne({ _id: id as any });
+    return r ? mapMongoToApi(r) : undefined;
   }
 
   public async getPendingForScreen(screenId: string): Promise<DeviceCommand[]> {
-    const rows = await query(`
-      SELECT * FROM device_commands
-      WHERE screen_id = ? AND status IN ('CREATED', 'SENT', 'RECEIVED') AND expires_at > ?
-      ORDER BY created_at ASC
-    `, [screenId, Date.now()]);
-    return rows.map(r => this.mapRow(r));
+    const rows = await this.col.find({
+      screenId,
+      status: { $in: ['CREATED', 'SENT', 'RECEIVED'] },
+      expiresAt: { $gt: Date.now() }
+    }).sort({ createdAt: 1 }).toArray();
+    return rows.map(r => mapMongoToApi(r));
   }
 
   public async getRecentForScreen(screenId: string, limit = 10): Promise<DeviceCommand[]> {
-    const rows = await query(`
-      SELECT * FROM device_commands
-      WHERE screen_id = ?
-      ORDER BY created_at DESC
-      LIMIT ?
-    `, [screenId, limit]);
-    return rows.map(r => this.mapRow(r));
+    const rows = await this.col.find({ screenId }).sort({ createdAt: -1 }).limit(limit).toArray();
+    return rows.map(r => mapMongoToApi(r));
   }
 
   public async markSent(id: string): Promise<DeviceCommand | null> {
-    const now = new Date();
-    await execute("UPDATE device_commands SET status = 'SENT', sent_at = ? WHERE id = ? AND status = 'CREATED'", [now, id]);
+    await this.col.updateOne(
+      { _id: id as any, status: 'CREATED' },
+      { $set: { status: 'SENT', sentAt: new Date() } }
+    );
     return await this.getById(id) || null;
   }
 
   public async markReceived(id: string): Promise<DeviceCommand | null> {
-    const now = new Date();
-    await execute("UPDATE device_commands SET status = 'RECEIVED', received_at = ? WHERE id = ? AND status IN ('CREATED', 'SENT')", [now, id]);
+    await this.col.updateOne(
+      { _id: id as any, status: { $in: ['CREATED', 'SENT'] } },
+      { $set: { status: 'RECEIVED', receivedAt: new Date() } }
+    );
     return await this.getById(id) || null;
   }
 
   public async markApplied(id: string): Promise<DeviceCommand | null> {
-    const now = new Date();
-    await execute("UPDATE device_commands SET status = 'APPLIED', applied_at = ? WHERE id = ?", [now, id]);
+    await this.col.updateOne(
+      { _id: id as any },
+      { $set: { status: 'APPLIED', appliedAt: new Date() } }
+    );
     return await this.getById(id) || null;
   }
 
   public async markAcknowledged(id: string): Promise<DeviceCommand | null> {
-    const now = new Date();
-    await execute("UPDATE device_commands SET status = 'ACKNOWLEDGED', acknowledged_at = ? WHERE id = ?", [now, id]);
+    await this.col.updateOne(
+      { _id: id as any },
+      { $set: { status: 'ACKNOWLEDGED', acknowledgedAt: new Date() } }
+    );
     return await this.getById(id) || null;
   }
 
   public async markFailed(id: string, errorMessage: string): Promise<DeviceCommand | null> {
-    await execute("UPDATE device_commands SET status = 'FAILED', error_message = ? WHERE id = ?", [errorMessage, id]);
+    await this.col.updateOne(
+      { _id: id as any },
+      { $set: { status: 'FAILED', errorMessage } }
+    );
     return await this.getById(id) || null;
   }
 
-  public async reapExpiredTimeouts(timeoutThresholdMs = 30000): Promise<number> {
+  public async reapExpiredTimeouts(): Promise<number> {
     const now = Date.now();
-    const res = await execute(`
-      UPDATE device_commands
-      SET status = 'TIMEOUT', error_message = 'Command timed out without TV acknowledgement'
-      WHERE status IN ('CREATED', 'SENT', 'RECEIVED') AND expires_at < ?
-    `, [now]);
-    return res.affectedRows;
-  }
-
-  private mapRow(r: any): DeviceCommand {
-    return {
-      id: r.id,
-      screenId: r.screen_id,
-      deviceId: r.device_id || undefined,
-      commandType: r.command_type as CommandType,
-      payload: safeJson(r.payload, undefined),
-      status: r.status as CommandStatus,
-      errorMessage: r.error_message || undefined,
-      createdAt: formatDateTimeToISO(r.created_at)!,
-      sentAt: formatDateTimeToISO(r.sent_at) || undefined,
-      receivedAt: formatDateTimeToISO(r.received_at) || undefined,
-      appliedAt: formatDateTimeToISO(r.applied_at) || undefined,
-      acknowledgedAt: formatDateTimeToISO(r.acknowledged_at) || undefined,
-      expiresAt: r.expires_at,
-    };
+    const res = await this.col.updateMany(
+      { status: { $in: ['CREATED', 'SENT', 'RECEIVED'] }, expiresAt: { $lt: now } },
+      { $set: { status: 'TIMEOUT', errorMessage: 'Command timed out without TV acknowledgement' } }
+    );
+    return res.modifiedCount;
   }
 }
 

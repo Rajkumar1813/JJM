@@ -79,6 +79,7 @@ export interface Screen {
     screenResolution?: string;
     ipAddress?: string;
   };
+  displayKey?: string;
   createdAt: string;
 }
 

@@ -145,8 +145,8 @@ router.post('/:screenId/heartbeat', async (req: Request, res: Response) => {
   }
 
   try {
-    const io = getIO();
-    io.to('admins').emit('screen:heartbeat_received', {
+    
+    getIO().to('admins').emit('screen:heartbeat_received', {
       screenId: screen.id,
       status: 'online',
       healthStatus,

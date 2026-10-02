@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   ListVideo,
@@ -168,7 +169,7 @@ export const PlaylistsPage: React.FC<PlaylistsPageProps> = ({
       }
       onRefresh();
     } catch (err: any) {
-      alert(`Error saving playlist: ${err.message}`);
+      alert(`Error saving playlist: ${getErrorMessage(err)}`);
     }
   };
 
@@ -178,7 +179,7 @@ export const PlaylistsPage: React.FC<PlaylistsPageProps> = ({
       await api.delete(`/playlists/${id}`);
       onRefresh();
     } catch (err: any) {
-      alert(`Error deleting playlist: ${err.message}`);
+      alert(`Error deleting playlist: ${getErrorMessage(err)}`);
     }
   };
 

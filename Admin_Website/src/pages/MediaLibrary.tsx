@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import {
   Image as ImageIcon,
@@ -72,7 +73,7 @@ export const MediaLibraryPage: React.FC<MediaLibraryPageProps> = ({
       setFile(null);
       onRefresh();
     } catch (err: any) {
-      alert(`Upload failed: ${err.message}`);
+      alert(`Upload failed: ${getErrorMessage(err)}`);
     } finally {
       setIsUploading(false);
     }
@@ -85,7 +86,18 @@ export const MediaLibraryPage: React.FC<MediaLibraryPageProps> = ({
       await api.delete(`/media/${id}`);
       onRefresh();
     } catch (err: any) {
-      alert(`Delete failed: ${err.message}`);
+      if (err.response?.status === 409) {
+        if (confirm(`${err.response.data.message || 'Media is in use.'}\n\nDo you want to force delete it from all playlists and campaigns?`)) {
+          try {
+            await api.delete(`/media/${id}?force=true`);
+            onRefresh();
+          } catch (forceErr: any) {
+            alert(`Force delete failed: ${getErrorMessage(forceErr)}`);
+          }
+        }
+      } else {
+        alert(`Delete failed: ${getErrorMessage(err)}`);
+      }
     }
   };
 

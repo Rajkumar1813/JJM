@@ -8,7 +8,7 @@ import { pairingService } from '../services/pairingService';
 import { resolverService } from '../services/resolverService';
 import { commandService } from '../services/commandService';
 import { healthMonitor } from '../services/healthMonitor';
-import { io } from '../server';
+import { getIO } from '../realtime/socket';
 import { CommandType } from '../types';
 
 const router = Router();
@@ -25,10 +25,6 @@ const createScreenSchema = z.object({
 
 const updateScreenSchema = createScreenSchema.partial();
 
-const pairSessionSchema = z.object({
-  socketId: z.string().optional(),
-  deviceMetadata: z.any().optional(),
-});
 
 const pairClaimSchema = z.object({
   pairingCode: z.string().min(1),
@@ -49,8 +45,9 @@ router.get('/', async (req: Request, res: Response) => {
   const screensList = await screenRepo.getAll();
   const screens = await Promise.all(screensList.map(async (s) => {
     const health = await healthMonitor.evaluateScreenHealth(s);
+    const { deviceToken, ...safeScreen } = s;
     return {
-      ...s,
+      ...safeScreen,
       healthStatus: health,
       connectionStatus: health === 'OFFLINE' ? 'offline' : 'online',
     };
@@ -63,16 +60,17 @@ router.get('/:id', async (req: Request, res: Response) => {
   if (!screen) {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
+  const { deviceToken, ...safeScreen } = screen;
   try {
     const resolvedConfig = await resolverService.resolveScreenConfig(screen.id);
     const health = await healthMonitor.evaluateScreenHealth(screen);
     return res.json({
       success: true,
-      screen: { ...screen, healthStatus: health },
+      screen: { ...safeScreen, healthStatus: health },
       resolvedConfig,
     });
   } catch (err: any) {
-    return res.json({ success: true, screen, resolvedConfig: null, error: err.message });
+    return res.json({ success: true, screen: safeScreen, resolvedConfig: null, error: err.message });
   }
 });
 
@@ -138,26 +136,16 @@ router.patch('/:id', async (req: Request, res: Response) => {
     targetConfigVersion: newTargetVersion,
   });
 
-  if (io) {
+  if (getIO()) {
     const config = await resolverService.resolveScreenConfig(existing.id);
-    io.to(`screen:${existing.id}`).emit('config:update', { config, targetConfigVersion: newTargetVersion });
-    io.to('admins').emit('screens:changed');
+    getIO().to(`screen:${existing.id}`).emit('config:update', { config, targetConfigVersion: newTargetVersion });
+    getIO().to('admins').emit('screens:changed');
   }
 
   await auditRepo.log('UPDATE_SCREEN', 'Screen', existing.id, `Updated screen params (targetConfigVersion: ${newTargetVersion})`);
   return res.json({ success: true, screen: updated });
 });
 
-router.post('/pair-session', async (req: Request, res: Response) => {
-  const parsed = pairSessionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.format() });
-  }
-
-  const { socketId, deviceMetadata } = parsed.data;
-  const session = await pairingService.createPairingSession(socketId, deviceMetadata);
-  return res.json({ success: true, session });
-});
 
 router.post('/pair-claim', async (req: Request, res: Response) => {
   const parsed = pairClaimSchema.safeParse(req.body);
@@ -166,6 +154,11 @@ router.post('/pair-claim', async (req: Request, res: Response) => {
   }
 
   const { pairingCode, name, code, departmentId, location, queueUrl, staleThresholdSeconds } = parsed.data;
+
+  const dept = await departmentRepo.getById(departmentId);
+  if (!dept) {
+    return res.status(400).json({ success: false, message: `Department '${departmentId}' not found` });
+  }
 
   try {
     const { screen, session } = await pairingService.pairScreen(pairingCode, {
@@ -177,14 +170,16 @@ router.post('/pair-claim', async (req: Request, res: Response) => {
       staleThresholdSeconds: staleThresholdSeconds || 180,
     });
 
-    if (io) {
-      io.to(`pairing:${pairingCode}`).emit(`pairing:success`, {
+    if (getIO()) {
+      const config = await resolverService.resolveScreenConfig(screen.id);
+      getIO().to(`pairing:${pairingCode}`).emit(`paired`, {
         success: true,
         screenId: screen.id,
         deviceToken: session.deviceToken,
         screen,
+        config,
       });
-      io.to('admins').emit('screens:changed');
+      getIO().to('admins').emit('screens:changed');
     }
 
     return res.json({ success: true, screen, session });
@@ -199,10 +194,10 @@ router.post('/:id/unpair', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
 
-  if (io) {
-    io.to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
-    io.to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
-    io.to('admins').emit('screens:changed');
+  if (getIO()) {
+    getIO().to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
+    getIO().to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
+    getIO().to('admins').emit('screens:changed');
   }
 
   return res.json({ success: true, message: 'Screen unpaired successfully' });
@@ -214,16 +209,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Screen not found' });
   }
 
-  if (io) {
-    io.to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
-    io.emit('screen:unpaired', { screenId: screen.id });
+  if (getIO()) {
+    getIO().to(`screen:${screen.id}`).emit('screen:unpaired', { screenId: screen.id });
+    getIO().emit('screen:unpaired', { screenId: screen.id });
   }
 
   await screenRepo.delete(screen.id);
   await auditRepo.log('DELETE_SCREEN', 'Screen', screen.id, `Permanently deleted screen ${screen.name}`);
 
-  if (io) {
-    io.emit('screens:changed');
+  if (getIO()) {
+    getIO().emit('screens:changed');
   }
 
   return res.json({ success: true, message: 'Screen deleted successfully' });
@@ -280,10 +275,10 @@ router.post('/:id/toggle-pause', async (req: Request, res: Response) => {
   const newPaused = !screen.isPaused;
   const updated = await screenRepo.update(screen.id, { isPaused: newPaused });
 
-  if (io) {
+  if (getIO()) {
     const config = await resolverService.resolveScreenConfig(screen.id);
-    io.to(`screen:${screen.id}`).emit('config:update', { config });
-    io.to('admins').emit('screens:changed');
+    getIO().to(`screen:${screen.id}`).emit('config:update', { config });
+    getIO().to('admins').emit('screens:changed');
   }
 
   await auditRepo.log('TOGGLE_PAUSE', 'Screen', screen.id, `Toggled playback pause: ${newPaused ? 'PAUSED' : 'RESUMED'}`);
@@ -309,10 +304,10 @@ router.post('/:id/power', async (req: Request, res: Response) => {
   const powerState = state === 'off' ? 'off' : 'on';
   const updated = await screenRepo.update(screen.id, { powerState });
 
-  if (io) {
+  if (getIO()) {
     const config = await resolverService.resolveScreenConfig(screen.id);
-    io.to(`screen:${screen.id}`).emit('config:update', { config });
-    io.to('admins').emit('screens:changed');
+    getIO().to(`screen:${screen.id}`).emit('config:update', { config });
+    getIO().to('admins').emit('screens:changed');
   }
 
   await auditRepo.log('POWER_STATE', 'Screen', screen.id, `Set screen power state to ${powerState}`);

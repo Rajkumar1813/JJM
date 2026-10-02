@@ -12,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 
 import 'dart:io';
 import 'package:image/image.dart' as img;
+import 'package:crypto/crypto.dart' as crypto;
 import '../../core/network/api_service.dart';
 import '../../core/native/kiosk_channel.dart';
 import '../../core/storage/storage_service.dart';
@@ -226,6 +227,11 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     }
     
     _queueMonitor.updateThreshold(newConfig.staleThresholdSeconds);
+    
+    final hb = newConfig.settings['heartbeatSeconds'];
+    if (hb is int && hb > 0) {
+      SocketService.updateHeartbeatInterval(hb);
+    }
 
     SocketService.updateDiagnostics(
       appliedVersion: newConfig.configVersion,
@@ -552,9 +558,15 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
       _playSirenIfNeeded();
 
       // expiresAt from server
-      final expiresAtStr = announcement['expires_at'] ?? announcement['expiresAt'];
-      if (expiresAtStr != null) {
-        final expiresAt = DateTime.tryParse(expiresAtStr.toString());
+      final expiresAtRaw = announcement['expires_at'] ?? announcement['expiresAt'];
+      if (expiresAtRaw != null) {
+        DateTime? expiresAt;
+        if (expiresAtRaw is num) {
+          expiresAt = DateTime.fromMillisecondsSinceEpoch(expiresAtRaw.toInt());
+        } else {
+          expiresAt = DateTime.tryParse(expiresAtRaw.toString());
+        }
+
         if (expiresAt != null) {
            final now = DateTime.now().toUtc();
            final diff = expiresAt.difference(now);
@@ -737,7 +749,11 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
   }
 
   Future<void> _showTechnicianMenu() async {
-    final currentPin = _config?.settings['kioskPin']?.toString() ?? '9999';
+    final currentPinHash = _config?.settings['kioskPinHash']?.toString();
+    if (currentPinHash == null || currentPinHash.isEmpty) {
+      return; // disabled if no PIN configured
+    }
+
     String enteredPin = '';
     
     final bool? authSuccess = await showDialog<bool>(
@@ -757,7 +773,9 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
           ),
           onChanged: (val) => enteredPin = val,
           onSubmitted: (val) {
-            Navigator.of(ctx).pop(val == currentPin || val == '9999');
+            final bytes = utf8.encode(val);
+            final digest = crypto.sha256.convert(bytes).toString();
+            Navigator.of(ctx).pop(digest == currentPinHash);
           },
         ),
         actions: [
@@ -766,7 +784,11 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(enteredPin == currentPin || enteredPin == '9999'),
+            onPressed: () {
+              final bytes = utf8.encode(enteredPin);
+              final digest = crypto.sha256.convert(bytes).toString();
+              Navigator.of(ctx).pop(digest == currentPinHash);
+            },
             child: const Text('Verify'),
           ),
         ],
@@ -999,7 +1021,9 @@ class _DisplayEngineState extends State<DisplayEngine> with SingleTickerProvider
     final message = emergency['message'] ?? '';
     final severity = emergency['severity'] ?? 'critical';
 
-    final Color alertColor = severity == 'warning' ? const Color(0xFFD97706) : const Color(0xFFDC2626);
+    final Color alertColor = severity == 'info' ? const Color(0xFF2563EB)
+        : severity == 'warning' ? const Color(0xFFD97706) 
+        : const Color(0xFFDC2626);
 
     return AnimatedBuilder(
       animation: _pulseAnimation,

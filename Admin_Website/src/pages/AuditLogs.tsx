@@ -1,29 +1,48 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FileText, Clock, Search, Filter, ShieldCheck, CheckCircle2 } from 'lucide-react';
 import { AuditLog } from '../types';
 
-interface AuditLogsPageProps {
-  logs: AuditLog[];
-}
+import { api } from '../services/api';
 
-export const AuditLogsPage: React.FC<AuditLogsPageProps> = ({ logs }) => {
+interface AuditLogsPageProps {}
+
+export const AuditLogsPage: React.FC<AuditLogsPageProps> = () => {
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const limit = 50;
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAction, setSelectedAction] = useState<string>('all');
   const [selectedUser, setSelectedUser] = useState<string>('all');
 
-  const actionTypes = Array.from(new Set(logs.map((l) => l.action)));
+  const actionTypes = ['CREATE_SCREEN', 'PAIR_SCREEN', 'UPDATE_SCREEN', 'DELETE_SCREEN', 'ISSUE_COMMAND', 'CREATE_DEPARTMENT', 'UPDATE_DEPARTMENT', 'DELETE_DEPARTMENT', 'UPLOAD_MEDIA', 'DELETE_MEDIA', 'CREATE_PLAYLIST', 'UPDATE_PLAYLIST', 'DELETE_PLAYLIST', 'CREATE_CAMPAIGN', 'UPDATE_CAMPAIGN', 'DELETE_CAMPAIGN', 'BROADCAST_EMERGENCY', 'DISMISS_EMERGENCY'];
 
-  const filteredLogs = logs.filter((log) => {
-    const matchesSearch =
-      log.details.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.entity.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.entityId.toLowerCase().includes(searchTerm.toLowerCase());
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const res = await api.get('/audit-logs', {
+          params: {
+            offset,
+            limit,
+            search: searchTerm || undefined,
+            action: selectedAction !== 'all' ? selectedAction : undefined,
+          }
+        });
+        if (res.data.success) {
+          setLogs(res.data.auditLogs);
+          setTotal(res.data.total);
+        }
+      } catch (err) {
+        console.error('Failed to fetch audit logs', err);
+      }
+    };
+    
+    const debounce = setTimeout(fetchLogs, 300);
+    return () => clearTimeout(debounce);
+  }, [offset, limit, searchTerm, selectedAction]);
 
-    const matchesAction = selectedAction === 'all' || log.action === selectedAction;
-    const matchesUser = selectedUser === 'all' || (log.userId || 'Admin') === selectedUser;
-
-    return matchesSearch && matchesAction && matchesUser;
-  });
+  const filteredLogs = logs;
 
   return (
     <div style={{ padding: '28px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -46,7 +65,7 @@ export const AuditLogsPage: React.FC<AuditLogsPageProps> = ({ logs }) => {
               type="text"
               placeholder="Search audit trail, entity ID, or operation details..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); setOffset(0); }}
             />
           </div>
 
@@ -55,7 +74,7 @@ export const AuditLogsPage: React.FC<AuditLogsPageProps> = ({ logs }) => {
               className="form-select"
               style={{ width: 'auto', minWidth: '150px' }}
               value={selectedAction}
-              onChange={(e) => setSelectedAction(e.target.value)}
+              onChange={(e) => { setSelectedAction(e.target.value); setOffset(0); }}
             >
               <option value="all">All Actions</option>
               {actionTypes.map((act) => (
@@ -159,6 +178,30 @@ export const AuditLogsPage: React.FC<AuditLogsPageProps> = ({ logs }) => {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Showing {logs.length > 0 ? offset + 1 : 0} to {Math.min(offset + limit, total)} of {total} records
+        </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button 
+            className="btn btn-outline btn-sm" 
+            disabled={offset === 0}
+            onClick={() => setOffset(Math.max(0, offset - limit))}
+          >
+            Previous
+          </button>
+          <button 
+            className="btn btn-outline btn-sm" 
+            disabled={offset + limit >= total}
+            onClick={() => setOffset(offset + limit)}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
     </div>
   );
 };

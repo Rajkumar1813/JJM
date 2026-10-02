@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../../models/display_models.dart';
 import 'media_sync_service.dart';
+import '../network/api_service.dart';
 
 class MediaCacheService {
   static const int maxDiskBudgetBytes = 500 * 1024 * 1024; // 500MB
@@ -31,6 +32,10 @@ class MediaCacheService {
 
   /// Returns local file URI if fully cached, else network URL
   static Future<String> getMediaUrl(String networkUrl) async {
+    if (networkUrl.startsWith('/')) {
+      final baseUrl = await ApiService.getBaseUrl();
+      networkUrl = '$baseUrl$networkUrl';
+    }
     if (kIsWeb || _cacheDir == null) return networkUrl;
     final filename = MediaSyncService.computeSha256(Uint8List.fromList(utf8.encode(networkUrl)));
     final file = File('${_cacheDir!.path}/$filename');
@@ -54,9 +59,14 @@ class MediaCacheService {
 
     try {
       for (final item in items) {
-        final url = item.mediaUrl;
+        String? url = item.mediaUrl;
         final expectedHash = item.sha256Hash;
         if (url == null || url.isEmpty || item.type == 'queue') continue;
+
+        if (url.startsWith('/')) {
+          final baseUrl = await ApiService.getBaseUrl();
+          url = '$baseUrl$url';
+        }
 
         final filename = MediaSyncService.computeSha256(Uint8List.fromList(utf8.encode(url)));
         final file = File('${_cacheDir!.path}/$filename');
@@ -82,18 +92,38 @@ class MediaCacheService {
     }
   }
 
+  static bool _hasMediaError = false;
+  static bool get hasMediaError => _hasMediaError;
+  static void clearMediaError() => _hasMediaError = false;
+
   static Future<void> _downloadFile(String url, File file, String? expectedHash) async {
-    try {
-      final request = http.Request('GET', Uri.parse(url));
-      final response = await request.send();
-      if (response.statusCode == 200) {
-        final bytes = await response.stream.toBytes();
-        if (expectedHash == null || expectedHash.isEmpty || MediaSyncService.verifyChecksum(bytes, expectedHash)) {
-          await file.writeAsBytes(bytes);
-          await _recordAccess(file.uri.pathSegments.last);
+    int retries = 3;
+    int backoffMs = 2000;
+    
+    while (retries > 0) {
+      try {
+        final request = http.Request('GET', Uri.parse(url));
+        final response = await request.send();
+        if (response.statusCode == 200) {
+          final bytes = await response.stream.toBytes();
+          if (expectedHash == null || expectedHash.isEmpty || MediaSyncService.verifyChecksum(bytes, expectedHash)) {
+            await file.writeAsBytes(bytes);
+            await _recordAccess(file.uri.pathSegments.last);
+            return;
+          } else {
+            // Hash mismatch, partial/corrupted
+            if (await file.exists()) await file.delete();
+          }
         }
+      } catch (_) {}
+      
+      retries--;
+      if (retries > 0) {
+        await Future.delayed(Duration(milliseconds: backoffMs));
+        backoffMs *= 2;
       }
-    } catch (_) {}
+    }
+    _hasMediaError = true;
   }
 
   static Future<void> _recordAccess(String filename) async {

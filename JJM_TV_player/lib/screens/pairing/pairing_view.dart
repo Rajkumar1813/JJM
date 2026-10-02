@@ -18,9 +18,11 @@ class _PairingViewState extends State<PairingView> {
   bool _isLoading = true;
   String _statusMessage = "Connecting to JJM Hospital Control Server...";
   bool _isServerConnected = false;
-  bool _isRetrying = false; // Guard: prevent concurrent background retries
+  bool _isRetrying = false;
   Timer? _refreshTimer;
   Timer? _autoRetryTimer;
+  String? _pollSecret;
+  int _backoffSeconds = 2;
 
   // JJM Hospital Signature Palette
   static const Color _primaryPurple = Color(0xFF6B3A8A);
@@ -33,10 +35,31 @@ class _PairingViewState extends State<PairingView> {
   void initState() {
     super.initState();
     _initPairing();
-    // Auto-retry in background every 3 seconds if not connected yet
-    _autoRetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if ((_pairingCode == "------" || !_isServerConnected) && mounted) {
-        _silentBackgroundRetry();
+    _scheduleNextTick(const Duration(seconds: 3));
+  }
+
+  void _scheduleNextTick(Duration delay) {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = Timer(delay, () async {
+      if (!mounted) return;
+      if (_pairingCode != "------" && _isServerConnected && _pollSecret != null) {
+        // Poll via REST
+        try {
+          final res = await ApiService.checkPairingSession(_pairingCode, _pollSecret!);
+          if (res != null && res['status'] == 'paired' && res['screenId'] != null && res['deviceToken'] != null) {
+            await StorageService.saveCredentials(screenId: res['screenId'], deviceToken: res['deviceToken']);
+            ResolvedConfig? config = res['config'] is ResolvedConfig ? res['config'] : null;
+            if (config != null) await StorageService.saveCachedConfig(config);
+            if (!mounted) return;
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => DisplayEngine(screenId: res['screenId'], initialConfig: config)),
+            );
+            return; // We transitioned, stop polling
+          }
+        } catch (_) {}
+        _scheduleNextTick(const Duration(seconds: 3));
+      } else if (_pairingCode == "------" || !_isServerConnected) {
+        await _silentBackgroundRetry();
       }
     });
   }
@@ -50,12 +73,17 @@ class _PairingViewState extends State<PairingView> {
 
   Future<void> _silentBackgroundRetry() async {
     if (_isServerConnected && _pairingCode != "------") return;
-    if (_isRetrying) return; // Already in-flight, skip
+    if (_isRetrying) return;
     _isRetrying = true;
     try {
       final session = await ApiService.requestPairingSession();
       if (session != null && session['pairingCode'] != null && mounted) {
+        _backoffSeconds = 2; // reset
         _applyPairingSession(session);
+        _scheduleNextTick(const Duration(seconds: 3));
+      } else {
+        _scheduleNextTick(Duration(seconds: _backoffSeconds));
+        _backoffSeconds = (_backoffSeconds * 2).clamp(2, 16);
       }
     } finally {
       _isRetrying = false;
@@ -89,6 +117,7 @@ class _PairingViewState extends State<PairingView> {
     final code = session['pairingCode'].toString();
     setState(() {
       _pairingCode = code;
+      _pollSecret = session['pollSecret'];
       _isLoading = false;
       _isServerConnected = true;
       _statusMessage = "Ready! Enter this code in Admin Panel ➔ Screens to activate.";

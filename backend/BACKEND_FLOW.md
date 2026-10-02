@@ -2,14 +2,14 @@
 
 ## Purpose & Responsibilities
 The Node.js (Express/Socket.IO) backend serves as the authoritative source of truth for the digital signage network. Its primary responsibilities include:
-- Managing MySQL connections, automatic schema migrations, and admin bootstrapping on boot.
+- Managing MongoDB connections, automatic schema migrations, and admin bootstrapping on boot.
 - Coordinating API requests from the Admin Website (React) and the TV Player (Flutter).
 - Emitting real-time updates (commands, config changes, emergency alerts) over WebSockets to targeted screens.
 - Resolving campaign scheduling and config prioritization dynamically.
-- Managing media uploads, serving local static assets, and persisting configuration to MySQL.
+- Managing media uploads, serving local static assets, and persisting configuration to MongoDB.
 
 ## Tech Stack & Folder Tree
-**Stack:** Node.js, Express, Socket.IO, MySQL2 (pure SQL, no ORM), JSON Web Tokens (custom hashing), node-cron.
+**Stack:** Node.js, Express, Socket.IO, MongoDB (pure SQL, no ORM), JSON Web Tokens (custom hashing), node-cron.
 
 ```text
 backend/
@@ -18,9 +18,9 @@ backend/
 │   │   ├── admin/             # Admin-facing endpoints (auth, campaigns, media, screens)
 │   │   └── display/           # TV-facing endpoints (reconcile, commands)
 │   ├── config/                # Environment variables parsing and setup
-│   ├── db/                    # MySQL database logic
+│   ├── db/                    # MongoDB database logic
 │   │   ├── migrations/        # Raw .sql migration files
-│   │   ├── mysql.ts           # DB connection pool, transaction logic, migration runner
+│   │   ├── MongoDB.ts           # DB connection pool, transaction logic, migration runner
 │   │   └── repositories/      # SQL query wrappers (screens, campaigns, emergency, etc.)
 │   ├── jobs/                  # node-cron scheduled tasks (health check, campaign expiry)
 │   ├── models/                # TypeScript interfaces
@@ -31,7 +31,7 @@ backend/
 │   │   └── displayHandler.ts  # Events emitted/listened to by TV players
 │   └── server.ts              # Entry point: DB connect -> Migrate -> Boot Express/Sockets
 ├── .env.example               # Template for environment variables
-└── package.json               # Dependencies (mysql2, express, socket.io, etc.)
+└── package.json               # Dependencies (MongoDB, express, socket.io, etc.)
 ```
 
 ## Setup & Run
@@ -44,11 +44,11 @@ backend/
 | `CORS_ORIGIN` | No | Allowed Origins | `*` |
 | `PUBLIC_URL` | No | URL to access static assets | `http://localhost:5000` |
 | `UPLOAD_DIR` | No | Path to store media | `./uploads` |
-| `DB_HOST` | **Yes** | MySQL server address | `localhost` |
-| `DB_PORT` | **Yes** | MySQL server port | `3306` |
-| `DB_USER` | **Yes** | MySQL database user | `CHANGE_ME` |
-| `DB_PASSWORD` | **Yes** | MySQL database password | `CHANGE_ME` |
-| `DB_NAME` | **Yes** | MySQL database name | `hospital_signage` |
+| `MONGODB_URI` | **Yes** | MongoDB server address | `localhost` |
+| `DB_PORT` | **Yes** | MongoDB server port | `3306` |
+| `MONGODB_URI` | **Yes** | MongoDB database user | `CHANGE_ME` |
+| `MONGODB_URI` | **Yes** | MongoDB database password | `CHANGE_ME` |
+| `MONGODB_DB_NAME` | **Yes** | MongoDB database name | `hospital_signage` |
 | `DB_POOL_SIZE`| No | Max concurrent DB connections | `10` |
 | `ADMIN_EMAIL` | **Yes** | Bootstrap admin email | `admin@hospital.local` |
 | `ADMIN_PASSWORD`| **Yes** | Bootstrap admin password | `CHANGE_ME` |
@@ -58,8 +58,8 @@ backend/
 1. Clone the repo and `cd backend`.
 2. `npm install`
 3. Copy `.env.example` to `.env` and fill in DB credentials.
-4. Ensure MySQL 8 is running locally.
-5. Run `npm run dev`. The server will automatically connect to MySQL, run `001_init.sql`, inject the bootstrap admin, and start on port 5000.
+4. Ensure MongoDB 8 is running locally.
+5. Run `npm run dev`. The server will automatically connect to MongoDB, run `001_init.sql`, inject the bootstrap admin, and start on port 5000.
 
 ### Build & Deploy
 - **Build**: `npm run build` transpiles `src/` to `dist/`.
@@ -71,7 +71,7 @@ backend/
 ```mermaid
 sequenceDiagram
     participant S as server.ts
-    participant DB as mysql.ts
+    participant DB as MongoDB.ts
     participant R as Repositories
     participant C as Cron/Jobs
     
@@ -156,7 +156,7 @@ stateDiagram-v2
 }
 ```
 
-## Data Model (MySQL)
+## Data Model (MongoDB)
 ```mermaid
 erDiagram
     admin_users ||--o{ admin_sessions : creates
@@ -203,7 +203,7 @@ erDiagram
 ## Error Handling & Security Notes
 - **Authentication**: Devices use a long-lived `X-Device-Token` generated at pairing. Admins use standard JWTs via `Authorization: Bearer`.
 - **Authorization**: Role-based. All mutating endpoints ensure the user is active.
-- **SQL Injection**: Prevented globally by strictly using `mysql2/promises` parameterized queries (`?`). NEVER concatenate strings into SQL queries.
+- **SQL Injection**: Prevented globally by strictly using `MongoDB/promises` parameterized queries (`?`). NEVER concatenate strings into SQL queries.
 - **Data Validation**: Express routes validate incoming body parameters. Default fallbacks (e.g. `180` seconds) exist for thresholds.
 - **File Uploads**: `multer` checks file size (max 500MB) and mimetypes (JPEG, PNG, MP4). Corrupt files are handled by frontend SHA-256 validation.
 
@@ -211,7 +211,7 @@ erDiagram
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Backend crash on boot `ECONNREFUSED` | MySQL is not running or credentials in `.env` are wrong. | Start MySQL, verify `DB_USER` and `DB_PASSWORD`. |
+| Backend crash on boot `ECONNREFUSED` | MongoDB is not running or credentials in `.env` are wrong. | Start MongoDB, verify `MONGODB_URI` and `MONGODB_URI`. |
 | TVs showing 'Unauthorized' (401/403) | TV's `device_token` was rotated or deleted from the database. | The TV will auto-show a 6-digit pairing code. Re-pair from the Admin UI. |
 | Media uploads fail | File exceeds size limits or `UPLOAD_DIR` lacks write permissions. | `chmod -R 755 uploads/` or increase reverse-proxy size limits (e.g., Nginx `client_max_body_size`). |
 | Commands stuck in `SENT` state | The TV is disconnected or the socket dropped without a clean HTTP fallback. | Wait 3 minutes; the backend cron job will mark it `FAILED`. Force a page refresh on the TV if necessary. |
@@ -224,3 +224,4 @@ erDiagram
 - [ ] Upload an image to `/api/admin/media/upload`. Verify SHA-256 hash in `media` table matches file.
 - [ ] Create an emergency broadcast. Verify `emergency_events` table inserts a record, and Sockets emit to targeted rooms.
 - [ ] Let 5 minutes pass. Verify `HealthCheckJob` runs and marks disconnected screens as `offline`.
+

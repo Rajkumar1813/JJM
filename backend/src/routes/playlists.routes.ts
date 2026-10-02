@@ -1,3 +1,4 @@
+import { configPublisher } from '../services/configPublisher';
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { playlistRepo } from '../db/repositories/miscRepositories';
@@ -5,10 +6,20 @@ import { auditRepo } from '../db/repositories/miscRepositories';
 
 const router = Router();
 
+const playlistItemSchema = z.object({
+  type: z.enum(['image', 'video', 'announcement', 'queue']),
+  duration: z.number().int().min(1),
+  mediaId: z.string().optional(),
+  mediaUrl: z.string().optional(),
+  id: z.string().optional().default(''),
+  title: z.string().optional().default(''),
+  order: z.number().optional().default(0),
+});
+
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   description: z.string().optional(),
-  items: z.array(z.any()).optional(),
+  items: z.array(playlistItemSchema).optional(),
   isDefault: z.boolean().optional(),
 });
 
@@ -55,6 +66,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Playlist not found' });
   }
   await auditRepo.log('UPDATE_PLAYLIST', 'Playlist', playlist.id, `Updated playlist ${playlist.name}`);
+  await configPublisher.publish({ all: true });
   return res.json({ success: true, playlist });
 });
 
@@ -64,6 +76,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Playlist not found' });
   }
   await auditRepo.log('DELETE_PLAYLIST', 'Playlist', req.params.id, `Deleted playlist ${req.params.id}`);
+  await configPublisher.publish({ all: true });
   return res.json({ success: true, message: 'Playlist deleted successfully' });
 });
 

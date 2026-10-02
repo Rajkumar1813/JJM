@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState } from 'react';
 import { X, Megaphone, CheckCircle2, Tv, Clock, AlertCircle } from 'lucide-react';
 import { MediaItem } from '../types';
@@ -16,8 +17,6 @@ export const OneClickGlobalModal: React.FC<OneClickGlobalModalProps> = ({
   mediaList,
   onBroadcastSuccess,
 }) => {
-  if (!isOpen) return null;
-
   const [campaignName, setCampaignName] = useState('Hospital-Wide Informational Broadcast');
   const [selectedMediaId, setSelectedMediaId] = useState(mediaList[0]?.id || '');
   const [duration, setDuration] = useState(30);
@@ -25,6 +24,8 @@ export const OneClickGlobalModal: React.FC<OneClickGlobalModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [resultTelemetry, setResultTelemetry] = useState<{ received: number; playing: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
 
   const selectedMedia = mediaList.find((m) => m.id === selectedMediaId);
 
@@ -59,7 +60,7 @@ export const OneClickGlobalModal: React.FC<OneClickGlobalModalProps> = ({
         }, 2200);
       }
     } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to dispatch broadcast');
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }

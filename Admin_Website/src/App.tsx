@@ -51,7 +51,6 @@ export const App: React.FC = () => {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [hasActiveEmergency, setHasActiveEmergency] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
@@ -59,6 +58,7 @@ export const App: React.FC = () => {
   const [isPairModalOpen, setIsPairModalOpen] = useState(false);
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
   const [selectedScreen, setSelectedScreen] = useState<Screen | null>(null);
+  const [globalSettings, setGlobalSettings] = useState<any>(null);
 
   const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -93,14 +93,14 @@ export const App: React.FC = () => {
   // Fetch all initial data
   const fetchData = async () => {
     try {
-      const [screensRes, deptsRes, mediaRes, plRes, campRes, auditRes, emRes] = await Promise.all([
+      const [screensRes, deptsRes, mediaRes, plRes, campRes, emRes, settingsRes] = await Promise.all([
         api.get('/screens'),
         api.get('/departments'),
         api.get('/media'),
         api.get('/playlists'),
         api.get('/campaigns'),
-        api.get('/audit-logs'),
         api.get('/emergency').catch(() => ({ data: { success: false } })),
+        api.get('/settings').catch(() => ({ data: { success: false } })),
       ]);
 
       if (screensRes.data.success) setScreens(screensRes.data.screens);
@@ -108,12 +108,12 @@ export const App: React.FC = () => {
       if (mediaRes.data.success) setMedia(mediaRes.data.media);
       if (plRes.data.success) setPlaylists(plRes.data.playlists);
       if (campRes.data.success) setCampaigns(campRes.data.campaigns);
-      if (auditRes.data.success) setAuditLogs(auditRes.data.auditLogs);
       if (emRes.data?.success && emRes.data.announcement?.isActive) {
         setHasActiveEmergency(true);
       } else {
         setHasActiveEmergency(false);
       }
+      if (settingsRes.data?.success) setGlobalSettings(settingsRes.data.settings);
     } catch (err) {
       console.error('Error fetching admin data:', err);
     }
@@ -267,6 +267,8 @@ export const App: React.FC = () => {
         onLogout={handleLogout}
         isMobileOpen={isMobileOpen}
         onCloseMobile={() => setIsMobileOpen(false)}
+        hospitalName={globalSettings?.hospitalName || 'JJM HOSPITAL'}
+        hospitalBranch={globalSettings?.hospitalBranch || 'KASHIPUR • SIGNAGE'}
       />
 
       {/* Main Content Area */}
@@ -352,7 +354,7 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeTab === 'audit' && <AuditLogsPage logs={auditLogs} />}
+          {activeTab === 'audit' && <AuditLogsPage />}
 
           {activeTab === 'settings' && <SettingsPage />}
         </main>

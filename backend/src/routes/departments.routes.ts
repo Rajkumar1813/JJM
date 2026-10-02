@@ -1,6 +1,8 @@
+import { configPublisher } from '../services/configPublisher';
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { departmentRepo } from '../db/repositories/departmentRepository';
+import { screenRepo } from '../db/repositories/screenRepository';
 import { auditRepo } from '../db/repositories/miscRepositories';
 
 const router = Router();
@@ -62,15 +64,23 @@ router.patch('/:id', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: 'Department not found' });
   }
   await auditRepo.log('UPDATE_DEPARTMENT', 'Department', department.id, `Updated department ${department.name}`);
+  await configPublisher.publish({ departmentId: department.id });
   return res.json({ success: true, department });
 });
 
 router.delete('/:id', async (req: Request, res: Response) => {
+  const screens = await screenRepo.getAll();
+  const inUse = screens.some(s => s.departmentId === req.params.id);
+  if (inUse) {
+    return res.status(409).json({ success: false, message: 'Department is in use by one or more screens' });
+  }
+
   const success = await departmentRepo.delete(req.params.id);
   if (!success) {
     return res.status(404).json({ success: false, message: 'Department not found' });
   }
   await auditRepo.log('DELETE_DEPARTMENT', 'Department', req.params.id, `Deleted department ${req.params.id}`);
+  await configPublisher.publish({ departmentId: req.params.id });
   return res.json({ success: true, message: 'Department deleted successfully' });
 });
 

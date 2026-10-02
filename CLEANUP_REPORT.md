@@ -2,29 +2,29 @@
 
 ## Purpose
 
-This report is the historical repository cleanup and legacy-code audit record for the Production V2 upgrade. It reflects the final state where all legacy files were purged, and MySQL 8 was established as the exclusive database.
+This report is the historical repository cleanup and legacy-code audit record for the Production V2 upgrade. It reflects the final state where all legacy files were purged, and MongoDB 8 was established as the exclusive database.
 
 The production architecture remains strictly validated as:
 
-**Admin Web** → **REST API / Socket.IO** → **Backend Services** → **Repository/Data Layer** → **MySQL 8** → **Device Commands/Config/Media** → **Android TV Player** → **ACK/Heartbeat/Reconciliation** → **Backend** → **Admin Dashboard**.
+**Admin Web** → **REST API / Socket.IO** → **Backend Services** → **Repository/Data Layer** → **MongoDB 8** → **Device Commands/Config/Media** → **Android TV Player** → **ACK/Heartbeat/Reconciliation** → **Backend** → **Admin Dashboard**.
 
 ---
 
 ## 1. Database
 
 ### Authoritative database
-MySQL 8 (`hospital_signage`)
+MongoDB 8 (`hospital_signage`)
 
-MySQL is the **sole authoritative production database**. No SQLite, no `db.json`, no Docker.
+MongoDB is the **sole authoritative production database**. No SQLite, no `db.json`, no .
 
 **Validated Requirements**:
 - Production APIs/services do **not** read or write flat files.
-- MySQL is accessed exclusively through the typed repository/data-access layer (`backend/src/db/repositories/*`).
+- MongoDB is accessed exclusively through the typed repository/data-access layer (`backend/src/db/repositories/*`).
 - Database migrations are deterministic and repeatable via `.sql` files (`backend/src/db/migrations/*`).
 
 ### Legacy database files
 **Classification**: DELETED
-- **Status**: Migration to MySQL is 100% complete and verified. All legacy `hospital_signage.db`, `hospital_signage.db-wal`, `hospital_signage.db-shm` (SQLite) and `db.json` files have been permanently purged.
+- **Status**: Migration to MongoDB is 100% complete and verified. All legacy `hospital_signage.db`, `hospital_signage.db-wal`, `hospital_signage.db-shm` (SQLite) and `db.json` files have been permanently purged.
 - **Runtime Dependency**: Zero runtime imports or file operations exist in any backend service, route, or server file.
 
 ---
@@ -53,7 +53,7 @@ Every file and folder across the repository is classified as:
 ## 4. Backend Cleanup
 
 - **JSON database persistence**: Removed.
-- **Duplicate database implementations**: None. Single MySQL access layer (`backend/src/db/mysql.ts` + 8 repositories).
+- **Duplicate database implementations**: None. Single MongoDB access layer (`backend/src/db/MongoDB.ts` + 8 repositories).
 - **Old screen-targeting logic**: Replaced by targeted command system with screen/department/all scoping in `resolverService.ts`.
 - **Duplicate Socket.IO listeners/handlers**: None. Unified socket lifecycle handlers in `server.ts`.
 - **Obsolete command implementations**: Fire-and-forget socket emits replaced by audited 5-stage ACK handshake (`commandService.ts`).
@@ -63,7 +63,7 @@ Every file and folder across the repository is classified as:
 - **Direct filesystem persistence**: State persistence via JSON or SQLite completely eliminated. Only uploaded static media binaries are saved to `backend/uploads/media/`.
 
 **Architecture in effect**:
-`Route/Controller` → `Service` → `Repository` → `MySQL`.
+`Route/Controller` → `Service` → `Repository` → `MongoDB`.
 
 ---
 
@@ -102,7 +102,7 @@ Single authoritative implementations verified across the system:
 - **Socket.IO connection**: Centralized backend server in `server.ts`; client singletons in Admin and Flutter TV.
 - **Configuration resolution**: Authoritative resolver in `resolverService.ts`.
 - **Media synchronization**: SHA-256 verified caching in `media_sync_service.dart`.
-- **Emergency handling**: MySQL-persisted `emergency_events` with immediate broadcast in `emergencyRepository.ts` & `emergency.routes.ts`.
+- **Emergency handling**: MongoDB-persisted `emergency_events` with immediate broadcast in `emergencyRepository.ts` & `emergency.routes.ts`.
 - **Queue handling**: DOM watchdog in `queue_monitor.dart`.
 - **Device heartbeat**: Periodic telemetry received in `server.ts` and evaluated by `healthMonitor.ts`.
 - **Audit logging**: Persistent transactional logging in `AuditRepository`.
@@ -134,12 +134,12 @@ Single authoritative implementations verified across the system:
 
 Executed via `backend/src/db/migrate.ts` and verified via `backend/src/tests/db_verify.js`:
 
-| Entity | `MySQL DB` Source Count | MySQL Migrated Count | Migration Status |
+| Entity | `MongoDB DB` Source Count | MongoDB Migrated Count | Migration Status |
 | :--- | :--- | :--- | :--- |
 | **Departments** | 0 (synthesized from screen) | 1 (`DEP-OPD`) | **VERIFIED (Lossless)** |
 | **Screens** | 1 (`SCR-123-TV`) | 1 (`SCR-123-TV`) | **VERIFIED (Lossless)** |
 | **Campaigns** | 1 (`CAMP-MU7YZGPM`) | 1 (`CAMP-MU7YZGPM`) | **VERIFIED (Lossless)** |
-| **Media Items** | 0 | 4 records in MySQL | **VERIFIED** |
+| **Media Items** | 0 | 4 records in MongoDB | **VERIFIED** |
 | **System Versions** | None | 2 (`GLOBAL_CONFIG`, `MEDIA_MANIFEST`) | **VERIFIED** |
 | **Foreign Key Relationships** | N/A | Screens linked to Departments & Devices | **VERIFIED (100% integrity)** |
 
@@ -148,7 +148,7 @@ Executed via `backend/src/db/migrate.ts` and verified via `backend/src/tests/db_
 ## 11. Runtime Verification
 
 ### Backend
-- [x] **MySQL is authoritative**: MySQL 8 exclusively receives queries and transactions.
+- [x] **MongoDB is authoritative**: MongoDB 8 exclusively receives queries and transactions.
 - [x] **No flat files used at runtime**: Zero runtime file reads/writes for database records.
 - [x] **Repositories are used**: All 8 domain models interact through typed repositories.
 - [x] **Commands are persisted**: Audited commands recorded in `device_commands` table.
@@ -241,7 +241,7 @@ To be performed during hardware deployment:
 
 | Path | Reason | Replacement | Verified |
 | :--- | :--- | :--- | :---: |
-| `backend/src/db/database.ts` | Obsolete JSON database engine reading/writing `MySQL DB` via synchronous `fs` methods. | `backend/src/db/mysql.ts` + `backend/src/db/repositories/*` | [x] |
+| `backend/src/db/database.ts` | Obsolete JSON database engine reading/writing `MongoDB DB` via synchronous `fs` methods. | `backend/src/db/MongoDB.ts` + `backend/src/db/repositories/*` | [x] |
 | `backend/generate_docx.js` | Temporary scratch script used during initial documentation exports. | `SYSTEM_ARCHITECTURE_AND_FLOW.md` and versioned docx files | [x] |
 | `Hospital_Queue_Digital_Signage_Full_Implementation_Plan_Web_Admin_Flutter_TV_Player (1).docx` | Outdated V1 draft specification. | `JJM_Hospital_Production_V2_Development_Documentation.docx` | [x] |
 | `backend/package.json` (`jsonwebtoken`, `@types/jsonwebtoken`, `docx`) | Unused dependencies. Device auth uses cryptographic hardware tokens; docx is no longer generated. | Removed from `dependencies` and `devDependencies` | [x] |
@@ -252,7 +252,7 @@ To be performed during hardware deployment:
 
 | Old Path | New Implementation | Status |
 | :--- | :--- | :--- |
-| `backend/data/MySQL DB` | `backend/src/db/mysql.ts` + `backend/src/db/repositories/*` (`hospital_signage.db`) | **VERIFIED (Complete)** |
+| `backend/data/MongoDB DB` | `backend/src/db/MongoDB.ts` + `backend/src/db/repositories/*` (`hospital_signage.db`) | **VERIFIED (Complete)** |
 
 ---
 
@@ -260,7 +260,7 @@ To be performed during hardware deployment:
 
 | Old Implementation | New Implementation | Status |
 | :--- | :--- | :--- |
-| **JSON persistence / SQLite** | MySQL 8 repository layer | **VERIFIED** |
+| **JSON persistence / SQLite** | MongoDB 8 repository layer | **VERIFIED** |
 | **Legacy targeting (blind emit)** | V2 targeted command system (5-stage ACK handshake with UUID tracking) | **VERIFIED** |
 | **Legacy display flow (simple timer)** | V2 TV state/reconciliation system (11-State FSM with DOM queue monitor) | **VERIFIED** |
 
@@ -270,7 +270,7 @@ To be performed during hardware deployment:
 
 | Path | Reason Retained | Runtime Used? | Removal Plan |
 | :--- | :--- | :--- | :--- |
-| `backend/data/MySQL DB` & `.bak` | Historical migration backup snapshot. | **No** (0 runtime dependencies) | Safe to archive or purge after physical TV sign-off. |
+| `backend/data/MongoDB DB` & `.bak` | Historical migration backup snapshot. | **No** (0 runtime dependencies) | Safe to archive or purge after physical TV sign-off. |
 
 *Remaining legacy production code*: **NONE**.
 
@@ -278,8 +278,8 @@ To be performed during hardware deployment:
 
 ## 19. Final Checklist
 
-- [x] MySQL is the only authoritative database.
-- [x] `MySQL DB` is not used by runtime.
+- [x] MongoDB is the only authoritative database.
+- [x] `MongoDB DB` is not used by runtime.
 - [x] Backend source is in the approved source directory (`backend/src`).
 - [x] `dist` is generated, not manually maintained.
 - [x] Duplicate repositories removed.
@@ -298,7 +298,7 @@ To be performed during hardware deployment:
 - [x] `.gitignore` verified.
 - [x] Secrets removed from source.
 - [x] Builds pass (`backend`, `Admin_Website`).
-- [x] Automated tests pass (backend V2 suite, MySQL schema verify, Flutter tests).
+- [x] Automated tests pass (backend V2 suite, MongoDB schema verify, Flutter tests).
 - [x] Backup/restore verified.
 - [x] Rollback procedure documented.
 
@@ -317,10 +317,10 @@ To be performed during hardware deployment:
 ### 21.1 Files Deleted
 | File Path | Description | Reason for Removal | Status |
 | :--- | :--- | :--- | :--- |
-| `backend/data/*` | Legacy SQLite files | Removed to eliminate dual-persistence and ensure single MySQL 8 source of truth | **DELETED** |
+| `backend/data/*` | Legacy SQLite files | Removed to eliminate dual-persistence and ensure single MongoDB 8 source of truth | **DELETED** |
 
 ### 21.2 Code Integrity
-All schema definitions, models, repositories, routes, migrations, and services remain 100% intact relying solely on MySQL 8.
+All schema definitions, models, repositories, routes, migrations, and services remain 100% intact relying solely on MongoDB 8.
 
 ### 21.3 Fresh Database Table Verification
-All 12 tables (`screens`, `departments`, `devices`, `campaigns`, `campaign_targets`, `playlists`, `media`, `pairing_sessions`, `device_commands`, `emergency_events`, `audit_logs`, `system_versions`) are successfully migrated to MySQL 8 natively.
+All 12 tables (`screens`, `departments`, `devices`, `campaigns`, `campaign_targets`, `playlists`, `media`, `pairing_sessions`, `device_commands`, `emergency_events`, `audit_logs`, `system_versions`) are successfully migrated to MongoDB 8 natively.

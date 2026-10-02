@@ -6,48 +6,42 @@ export function generateId(prefix: string): string {
 }
 
 /**
- * Builds a dynamic UPDATE query for MySQL.
- * Returns { sql, values } or null if no valid updates.
+ * Builds a dynamic $set query for MongoDB.
  * Ignores keys where value is undefined.
  */
-export function buildUpdateQuery(tableName: string, id: string, updates: Record<string, any>): { sql: string, values: any[] } | null {
-  const setClauses: string[] = [];
-  const values: any[] = [];
-
+export function buildMongoUpdate(updates: Record<string, any>): Record<string, any> | null {
+  const $set: Record<string, any> = {};
+  let hasKeys = false;
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
-      // map camelCase to snake_case if needed, but we assume keys passed here are already snake_case column names,
-      // or we handle mapping before calling this. Let's assume caller passes DB column names.
-      setClauses.push(`${key} = ?`);
-      values.push(value);
+      $set[key] = value;
+      hasKeys = true;
     }
   }
-
-  if (setClauses.length === 0) {
-    return null;
-  }
-
-  const sql = `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE id = ?`;
-  values.push(id);
-  
-  return { sql, values };
+  return hasKeys ? { $set } : null;
 }
 
 export function formatDateTimeToISO(dt: any): string | null {
   if (!dt) return null;
   if (dt instanceof Date) return dt.toISOString();
   if (typeof dt === 'string') return new Date(dt).toISOString();
+  if (typeof dt === 'number') return new Date(dt).toISOString();
   return null;
 }
 
-export function safeJson(val: any, defaultVal: any = null): any {
-  if (val === null || val === undefined) return defaultVal;
-  if (typeof val === 'string') {
-    try {
-      return JSON.parse(val);
-    } catch {
-      return val;
+export function mapMongoToApi(doc: any): any {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  
+  // deeply map dates to iso strings if they are at top level
+  for (const key in rest) {
+    if (rest[key] instanceof Date) {
+      rest[key] = rest[key].toISOString();
     }
   }
-  return val; // mysql2 automatically parses JSON columns if decimalNumbers is on or with correct driver settings, but let's be safe.
+  return { id: _id, ...rest };
+}
+
+export function mapMongoListToApi(docs: any[]): any[] {
+  return docs.map(mapMongoToApi);
 }

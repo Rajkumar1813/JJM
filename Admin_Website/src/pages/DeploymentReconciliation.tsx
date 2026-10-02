@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState, useEffect } from 'react';
 import {
   Layers,
@@ -60,7 +61,7 @@ export const DeploymentReconciliation: React.FC = () => {
       });
       fetchData();
     } catch (err: any) {
-      alert(`Sync failed: ${err.message}`);
+      alert(`Sync failed: ${getErrorMessage(err)}`);
     } finally {
       setSyncingScreenId(null);
     }

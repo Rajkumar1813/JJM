@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../utils';
 import React, { useState, useEffect } from 'react';
 import {
   Settings,
@@ -30,6 +31,7 @@ export const SettingsPage: React.FC = () => {
   const [defaultDuration, setDefaultDuration] = useState(15);
   const [autoRebootTime, setAutoRebootTime] = useState('04:00');
   const [kioskLock, setKioskLock] = useState(true);
+  const [kioskPin, setKioskPin] = useState('');
   const [soundAlerts, setSoundAlerts] = useState(true);
   const [timezone, setTimezone] = useState('Asia/Kolkata');
 
@@ -79,12 +81,14 @@ export const SettingsPage: React.FC = () => {
         defaultDuration,
         autoRebootTime,
         kioskLock: kioskLock.toString(),
+        kioskPin: kioskPin ? kioskPin : undefined,
         soundAlerts: soundAlerts.toString(),
         timezone
       });
+      setKioskPin(''); // clear after save
       toast.success('Settings saved successfully');
     } catch (err: any) {
-      toast.error('Failed to save settings: ' + (err.response?.data?.message || err.message));
+      toast.error('Failed to save settings: ' + (getErrorMessage(err)));
     } finally {
       setSaving(false);
     }
@@ -284,6 +288,17 @@ export const SettingsPage: React.FC = () => {
                     style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }}
                   />
                 </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">New Kiosk Technician PIN (Leave blank to keep current)</label>
+                  <input
+                    type="password"
+                    className="form-input"
+                    placeholder="Enter new 4+ digit PIN"
+                    value={kioskPin}
+                    onChange={(e) => setKioskPin(e.target.value)}
+                  />
+                </div>
               </>
             )}
 
@@ -315,7 +330,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
 
                 <div style={{ padding: '12px', backgroundColor: 'var(--info-subtle)', borderRadius: 'var(--radius-sm)', border: '1px solid #C2DCFA', fontSize: '12px', color: '#1E5894' }}>
-                  Queue URLs are directly fetched from the JJM Hospital HMS gateway (e.g. <code>https://hms.jjmhospitalkashipur.com/qd/123</code>) without modifying any doctor portal records.
+                  Queue URLs are directly fetched from the JJM Hospital HMS gateway (e.g. <code>https://example.invalid/qd/123</code>) without modifying any doctor portal records.
                 </div>
               </>
             )}

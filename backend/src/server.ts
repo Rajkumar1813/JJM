@@ -1,6 +1,22 @@
 import dotenv from 'dotenv';
 dotenv.config();
+import { z } from 'zod';
 import 'express-async-errors';
+
+const envSchema = z.object({
+  MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
+  CORS_ORIGIN: z.string().min(1, "CORS_ORIGIN is required"),
+});
+try {
+  envSchema.parse(process.env);
+} catch (err: any) {
+  if (err instanceof z.ZodError) {
+    console.error('[CRITICAL] Invalid environment variables:');
+    (err as any).errors.forEach((e: any) => console.error(`  - ${e.path.join('.')}: ${e.message}`));
+  }
+  process.exit(1);
+}
+
 
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
@@ -24,8 +40,9 @@ import publicDisplayRouter from './routes/publicDisplay.routes';
 import auditRouter from './routes/audit.routes';
 import emergencyRouter from './routes/emergency.routes';
 import settingsRouter from './routes/settings.routes';
+import pairingRouter from './routes/pairing.routes';
 
-import { initDbPool, pool } from './db/mysql';
+import { initDbPool, getDb, closeDb } from './db/mongo';
 import { runMigrations } from './db/migrate';
 import { initIO } from './realtime/socket';
 import { requireAdminAuth } from './middleware/auth.middleware';
@@ -36,8 +53,9 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
 
 const ALLOWED_ORIGINS = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : [];
 
@@ -76,16 +94,19 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Init Socket.IO
-export const io = initIO(server, isOriginAllowed);
+initIO(server, isOriginAllowed);
 
 // Routes
-app.use('/uploads', cors(), express.static(path.join(__dirname, '../uploads'), {
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '../uploads');
+app.use('/uploads', cors(), express.static(UPLOAD_DIR, {
   setHeaders: (res) => { res.setHeader('Access-Control-Allow-Origin', '*'); },
 }));
 
 app.use('/api/auth', authRouter);
 app.use('/api/public-display', publicDisplayRouter); // Uses displayKey query param
 app.use('/api/display', displayRouter); // TV routes (uses device auth inside)
+app.use('/api/pairing', pairingRouter); // Public pairing
+
 
 app.use('/api/screens', requireAdminAuth, screensRouter);
 app.use('/api/departments', requireAdminAuth, departmentsRouter);
@@ -99,13 +120,25 @@ app.use('/api/settings', requireAdminAuth, settingsRouter);
 app.get('/api/health', async (req, res) => {
   let dbStatus = 'down';
   try {
-    if (pool) {
-      await pool.query('SELECT 1');
+    const db = getDb();
+    if (db) {
+      await db.command({ ping: 1 });
       dbStatus = 'up';
     }
   } catch (err) {
     dbStatus = 'down';
   }
+  
+  if (dbStatus === 'down') {
+    return res.status(503).json({
+      status: 'error',
+      db: 'down',
+      version: '2.0.0-PROD',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   res.json({
     status: 'ok',
     db: dbStatus,
@@ -116,15 +149,26 @@ app.get('/api/health', async (req, res) => {
 });
 
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err.code === 11000) {
+    Logger.error(`[Duplicate Key Error] ${req.method} ${req.url}: ${err.message}`);
+    return res.status(409).json({
+      success: false,
+      message: 'Code or ID already exists',
+    });
+  }
+
   Logger.error(`[Unhandled Error] ${req.method} ${req.url}: ${err.message}`, { stack: err.stack });
+  
+  const isProd = process.env.NODE_ENV === 'production';
   res.status(err.status || 500).json({
     success: false,
-    message: err.message || 'Internal Hospital Control Server Error',
+    message: isProd ? 'Internal Hospital Control Server Error' : err.message || 'Internal Error',
   });
 });
 
 process.on('uncaughtException', (err) => {
   Logger.error(`[CRITICAL UNCAUGHT EXCEPTION] ${err.message}`, { stack: err.stack });
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason: any) => {
@@ -132,30 +176,12 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 async function startServer() {
-  initDbPool();
-
-  let retries = 10;
-  while (retries > 0) {
-    try {
-      await pool.query('SELECT 1');
-      Logger.info('[Database] Connected to MySQL successfully.');
-      break;
-    } catch (err: any) {
-      retries--;
-      Logger.warn(`[Database] Connection failed. Retries left: ${retries}. Error: ${err.message}`);
-      if (retries === 0) {
-        Logger.error('[Database] Could not connect to database after maximum retries. Exiting.');
-        process.exit(1);
-      }
-      await new Promise(res => setTimeout(res, 3000));
-    }
-  }
-
+  await initDbPool();
   await runMigrations();
 
   server.listen(PORT, HOST, () => {
     Logger.info(`=======================================================`);
-    Logger.info(` JJM Hospital Queue & Signage Controller (MySQL V2)    `);
+    Logger.info(` JJM Hospital Queue & Signage Controller (MongoDB)     `);
     Logger.info(` Port: http://${HOST}:${PORT}                       `);
     Logger.info(` Health: http://${HOST}:${PORT}/api/health           `);
     Logger.info(` Environment: ${process.env.NODE_ENV || 'production'} `);
@@ -165,7 +191,10 @@ async function startServer() {
   schedulerService.start();
 }
 
-startServer();
+startServer().catch(err => {
+  Logger.error(`[CRITICAL] startServer failed: ${err.message}`, { stack: err.stack });
+  process.exit(1);
+});
 
 const shutdown = async () => {
   schedulerService.stop();
@@ -174,10 +203,7 @@ const shutdown = async () => {
   server.close(() => {
     Logger.info('[System] HTTP server closed.');
   });
-  if (pool) {
-    await pool.end();
-    Logger.info('[System] Database pool closed.');
-  }
+  await closeDb();
   process.exit(0);
 };
 
