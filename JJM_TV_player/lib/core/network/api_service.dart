@@ -59,7 +59,7 @@ class ApiService {
 
   static Future<bool> _testHealth(String base) async {
     try {
-      final res = await http.get(Uri.parse('$base/api/health')).timeout(const Duration(seconds: 8));
+      final res = await http.get(Uri.parse('$base/api/health')).timeout(const Duration(seconds: 60));
       return res.statusCode == 200;
     } catch (_) {
       return false;
@@ -104,7 +104,7 @@ class ApiService {
             'socketId': socketId,
             'deviceMetadata': metadata ?? {'platform': 'Android TV', 'version': AppConfig.appVersion},
           }),
-        ).timeout(const Duration(seconds: 15));
+        ).timeout(const Duration(seconds: 60));
 
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
@@ -144,7 +144,7 @@ class ApiService {
     try {
       final baseUrl = await getBaseUrl();
       final url = Uri.parse('$baseUrl/api/display/$screenId/config');
-      final res = await http.get(url, headers: await _getHeaders()).timeout(const Duration(seconds: 8));
+      final res = await http.get(url, headers: await _getHeaders()).timeout(const Duration(seconds: 60));
       _checkAuth(res);
 
       if (res.statusCode == 200) {

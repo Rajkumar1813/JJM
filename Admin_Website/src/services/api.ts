@@ -32,7 +32,7 @@ export const clearAdminToken = () => {
 // ─── Axios Instance ──────────────────────────────────────────────────────────
 export const api = axios.create({
   baseURL: `${getActiveBackendUrl()}/api`,
-  timeout: 15000,
+  timeout: 60000, // 60s timeout for Render cold starts
   withCredentials: true,
 });
 

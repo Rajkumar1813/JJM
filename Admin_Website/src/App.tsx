@@ -79,8 +79,9 @@ export const App: React.FC = () => {
         if (!res.data.success) {
           handleLogout();
         }
-      }).catch(() => {
-        handleLogout();
+      }).catch((err) => {
+        // Interceptor handles 401. Don't logout on network errors.
+        console.error('Auth check failed:', err);
       }).finally(() => {
         setAuthChecked(true);
       });
