@@ -5,7 +5,7 @@ class AppConfig {
   // Production live backend URL (configurable via build argument --dart-define=BACKEND_URL=...)
   static const String productionBackendUrl = String.fromEnvironment(
     'BACKEND_URL',
-    defaultValue: "https://jjm-advertising.onrender.com",
+    defaultValue: "https://jjm-9kcz.onrender.com",
   );
 
   // Candidate hosts for auto discovery (production first, then local hospital LAN fallback)
